@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    https://tampermonkey.net/
-// @version      4.3.2
+// @version      4.3.3
 // @description  Names Strava activities from the OSM residential areas actually crossed by the route
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -15,18 +15,18 @@
     const CONFIG = {
         residentialBufferM: 30,
         residentialCacheDays: 30,
-        overpassMaxPoints: 50,
-        overpassTimeout: 25000,
-        overpassAttempts: 3,
-        overpassRetryDelay: 5000,
+        overpassMaxRoutePoints: 50,
+        overpassTimeoutMs: 25000,
+        overpassMaxAttempts: 3,
+        overpassRetryBaseMs: 5000,
         maxNamePlaces: 7,
-        stripParentheticals: true,
-        coordPrecision: 4,
-        rateLimit: 1050,
+        stripPlaceParentheticals: true,
+        geocodeCachePrecision: 4,
+        nominatimIntervalMs: 1050,
         nominatimPlaceZoom: 14,
         nominatimAddressZoom: 18,
-        successDelay: 1500,
-        errorDelay: 2000,
+        successStateMs: 1500,
+        errorStateMs: 2000,
     };
 
     const STRINGS = {
@@ -42,11 +42,16 @@
         noId: 'Could not detect activity ID from URL.',
     };
 
-    const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse';
-    const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
-    const GEOCODE_CACHE_PREFIX = 'strava_geocode_v9_';
-    const RESIDENTIAL_CACHE_PREFIX = 'strava_residential_v1_';
+    const API_URL = {
+        nominatim: 'https://nominatim.openstreetmap.org/reverse',
+        overpass: 'https://overpass-api.de/api/interpreter',
+    };
+    const CACHE_PREFIX = {
+        geocode: 'strava_geocode_v9_',
+        residential: 'strava_residential_v1_',
+    };
     const BUTTON_ID = 'strava-route-rename-btn';
+    const LOG_PREFIX = '[Strava Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
     const BUTTON_COLORS = {
         idle: '#fc4c02',
@@ -57,20 +62,46 @@
     };
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const log = message => console.log(`${LOG_PREFIX} ${message}`);
+
+    function errorMessage(error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+
+    function readJsonCache(key) {
+        const stored = localStorage.getItem(key);
+        if (stored === null) return null;
+        try {
+            return JSON.parse(stored);
+        } catch {
+            localStorage.removeItem(key);
+            return null;
+        }
+    }
+
+    function writeJsonCache(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+            // Cache failures must not prevent naming the route.
+        }
+    }
 
     function geocodeCacheKey(lat, lon, zoom) {
-        const precision = CONFIG.coordPrecision;
-        return `${GEOCODE_CACHE_PREFIX}z${zoom}_${Number(lat).toFixed(precision)}_${Number(lon).toFixed(precision)}`;
+        const precision = CONFIG.geocodeCachePrecision;
+        const roundedLat = Number(lat).toFixed(precision);
+        const roundedLon = Number(lon).toFixed(precision);
+        return `${CACHE_PREFIX.geocode}z${zoom}_${roundedLat}_${roundedLon}`;
     }
 
-    function setButtonState(btn, text, state = 'idle') {
-        btn.textContent = text;
-        btn.dataset.state = state;
-        btn.style.backgroundColor = BUTTON_COLORS[state] || BUTTON_COLORS.idle;
-        btn.style.color = 'white';
+    function setButtonState(button, text, state = 'idle') {
+        button.textContent = text;
+        button.dataset.state = state;
+        button.style.backgroundColor = BUTTON_COLORS[state] || BUTTON_COLORS.idle;
+        button.style.color = 'white';
     }
 
-    function getDistance(lat1, lon1, lat2, lon2) {
+    function haversineKm(lat1, lon1, lat2, lon2) {
         const earthRadiusKm = 6371;
         const dLat = (lat2 - lat1) * Math.PI / 180;
         const dLon = (lon2 - lon1) * Math.PI / 180;
@@ -80,37 +111,42 @@
         return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function indexAtDistance(dists, target) {
+    function indexAtDistance(cumulativeKm, targetKm) {
         let lo = 0;
-        let hi = dists.length - 1;
+        let hi = cumulativeKm.length - 1;
         while (lo < hi) {
             const mid = (lo + hi) >> 1;
-            if (dists[mid] < target) {
+            if (cumulativeKm[mid] < targetKm) {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        return (lo > 0 && Math.abs(dists[lo - 1] - target) < Math.abs(dists[lo] - target)) ? lo - 1 : lo;
+        const previousIsCloser = lo > 0
+            && Math.abs(cumulativeKm[lo - 1] - targetKm) < Math.abs(cumulativeKm[lo] - targetKm);
+        return previousIsCloser ? lo - 1 : lo;
     }
 
     // Douglas-Peucker simplification keeps the Overpass linestring compact.
     // The query radius includes the simplification tolerance, so no residential
     // polygon near the original GPX line is lost when bends are removed.
     function simplifyTrackForOverpass(track) {
-        const n = track.lats.length;
+        const n = track.latitudes.length;
         if (n <= 2) {
             return {
-                points: Array.from({ length: n }, (_, i) => ({ lat: track.lats[i], lon: track.lons[i] })),
+                points: Array.from({ length: n }, (_, i) => ({
+                    lat: track.latitudes[i],
+                    lon: track.longitudes[i],
+                })),
                 toleranceKm: 0,
             };
         }
 
-        const refLat = track.lats.reduce((sum, lat) => sum + lat, 0) / n;
+        const refLat = track.latitudes.reduce((sum, lat) => sum + lat, 0) / n;
         const kx = 111.32 * Math.cos(refLat * Math.PI / 180);
         const ky = 110.57;
-        const xs = track.lons.map(lon => lon * kx);
-        const ys = track.lats.map(lat => lat * ky);
+        const xs = track.longitudes.map(lon => lon * kx);
+        const ys = track.latitudes.map(lat => lat * ky);
 
         const indicesAt = toleranceKm => {
             const keep = new Uint8Array(n);
@@ -151,23 +187,26 @@
 
         let toleranceKm = 0.02;
         let indices = indicesAt(toleranceKm);
-        while (indices.length > CONFIG.overpassMaxPoints) {
+        while (indices.length > CONFIG.overpassMaxRoutePoints) {
             toleranceKm *= 1.5;
             indices = indicesAt(toleranceKm);
         }
         return {
-            points: indices.map(i => ({ lat: track.lats[i], lon: track.lons[i] })),
+            points: indices.map(i => ({
+                lat: track.latitudes[i],
+                lon: track.longitudes[i],
+            })),
             toleranceKm,
         };
     }
 
-    const sameCoord = (a, b) =>
+    const sameCoordinate = (a, b) =>
         Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lon - b.lon) < 1e-7;
 
     function normalizeRing(geometry) {
         return (geometry || [])
-            .filter(p => Number.isFinite(p?.lat) && Number.isFinite(p?.lon))
-            .map(p => ({ lat: p.lat, lon: p.lon }));
+            .filter(point => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
+            .map(point => ({ lat: point.lat, lon: point.lon }));
     }
 
     // Multipolygon members may be split into several OSM ways. Join matching
@@ -178,7 +217,7 @@
         while (pending.length) {
             let ring = pending.pop();
             let joined = true;
-            while (!sameCoord(ring[0], ring[ring.length - 1]) && joined) {
+            while (!sameCoordinate(ring[0], ring[ring.length - 1]) && joined) {
                 joined = false;
                 const head = ring[0];
                 const tail = ring[ring.length - 1];
@@ -186,13 +225,13 @@
                     const segment = pending[i];
                     const first = segment[0];
                     const last = segment[segment.length - 1];
-                    if (sameCoord(tail, first)) {
+                    if (sameCoordinate(tail, first)) {
                         ring = ring.concat(segment.slice(1));
-                    } else if (sameCoord(tail, last)) {
+                    } else if (sameCoordinate(tail, last)) {
                         ring = ring.concat(segment.slice(0, -1).reverse());
-                    } else if (sameCoord(head, last)) {
+                    } else if (sameCoordinate(head, last)) {
                         ring = segment.slice(0, -1).concat(ring);
-                    } else if (sameCoord(head, first)) {
+                    } else if (sameCoordinate(head, first)) {
                         ring = segment.slice(1).reverse().concat(ring);
                     } else {
                         continue;
@@ -202,20 +241,20 @@
                     break;
                 }
             }
-            if (ring.length >= 4 && sameCoord(ring[0], ring[ring.length - 1])) rings.push(ring);
+            if (ring.length >= 4 && sameCoordinate(ring[0], ring[ring.length - 1])) rings.push(ring);
         }
         return rings;
     }
 
-    function residentialArea(outers, inners = []) {
+    function createResidentialArea(outers, inners = []) {
         if (!outers.length) return null;
         const bbox = { south: Infinity, west: Infinity, north: -Infinity, east: -Infinity };
         for (const ring of outers) {
-            for (const p of ring) {
-                bbox.south = Math.min(bbox.south, p.lat);
-                bbox.west = Math.min(bbox.west, p.lon);
-                bbox.north = Math.max(bbox.north, p.lat);
-                bbox.east = Math.max(bbox.east, p.lon);
+            for (const point of ring) {
+                bbox.south = Math.min(bbox.south, point.lat);
+                bbox.west = Math.min(bbox.west, point.lon);
+                bbox.north = Math.max(bbox.north, point.lat);
+                bbox.east = Math.max(bbox.east, point.lon);
             }
         }
         return {
@@ -230,17 +269,22 @@
         for (const element of elements || []) {
             if (element.type === 'way') {
                 const ring = normalizeRing(element.geometry);
-                if (ring.length >= 4 && sameCoord(ring[0], ring[ring.length - 1])) {
-                    const area = residentialArea([ring]);
+                if (ring.length >= 4 && sameCoordinate(ring[0], ring[ring.length - 1])) {
+                    const area = createResidentialArea([ring]);
                     if (area) areas.push(area);
                 }
                 continue;
             }
             if (element.type !== 'relation') continue;
-            const members = (element.members || []).filter(m => m.type === 'way' && m.geometry);
-            const outerSegments = members.filter(m => m.role !== 'inner').map(m => m.geometry);
-            const innerSegments = members.filter(m => m.role === 'inner').map(m => m.geometry);
-            const area = residentialArea(stitchRings(outerSegments), stitchRings(innerSegments));
+            const members = (element.members || [])
+                .filter(member => member.type === 'way' && member.geometry);
+            const outerSegments = members
+                .filter(member => member.role !== 'inner')
+                .map(member => member.geometry);
+            const innerSegments = members
+                .filter(member => member.role === 'inner')
+                .map(member => member.geometry);
+            const area = createResidentialArea(stitchRings(outerSegments), stitchRings(innerSegments));
             if (area) areas.push(area);
         }
         return areas;
@@ -276,12 +320,12 @@
     }
 
     function ringDistanceKm(lat, lon, ring, limitKm) {
-        let best = Infinity;
+        let bestKm = Infinity;
         for (let i = 1; i < ring.length; i++) {
-            best = Math.min(best, pointSegmentDistanceKm(lat, lon, ring[i - 1], ring[i]));
-            if (best <= limitKm) break;
+            bestKm = Math.min(bestKm, pointSegmentDistanceKm(lat, lon, ring[i - 1], ring[i]));
+            if (bestKm <= limitKm) break;
         }
-        return best;
+        return bestKm;
     }
 
     function pointTouchesResidential(lat, lon, areas) {
@@ -289,17 +333,21 @@
         const dLat = bufferKm / 110.57;
         const dLon = bufferKm / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
         for (const area of areas) {
-            const b = area.bbox;
-            if (lat < b.south - dLat || lat > b.north + dLat
-                || lon < b.west - dLon || lon > b.east + dLon) continue;
+            const bbox = area.bbox;
+            if (lat < bbox.south - dLat || lat > bbox.north + dLat
+                || lon < bbox.west - dLon || lon > bbox.east + dLon) {
+                continue;
+            }
 
             const inOuter = area.outers.some(ring => pointInRing(lat, lon, ring));
             const inInner = area.inners.some(ring => pointInRing(lat, lon, ring));
             if (inOuter && !inInner) return true;
 
-            for (const ring of [...area.outers, ...area.inners]) {
-                if (ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm) return true;
-            }
+            const nearOuterBoundary = area.outers.some(ring =>
+                ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm);
+            const nearInnerBoundary = area.inners.some(ring =>
+                ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm);
+            if (nearOuterBoundary || nearInnerBoundary) return true;
         }
         return false;
     }
@@ -307,8 +355,8 @@
     function crossedResidentialRanges(track, areas) {
         const ranges = [];
         let start = null;
-        for (let i = 0; i < track.lats.length; i++) {
-            const inside = pointTouchesResidential(track.lats[i], track.lons[i], areas);
+        for (let i = 0; i < track.latitudes.length; i++) {
+            const inside = pointTouchesResidential(track.latitudes[i], track.longitudes[i], areas);
             if (inside && start === null) {
                 start = i;
             }
@@ -318,96 +366,92 @@
             }
         }
         if (start !== null) {
-            ranges.push({ start, end: track.lats.length - 1 });
+            ranges.push({ start, end: track.latitudes.length - 1 });
         }
 
         return ranges.map(range => {
             const fromKm = range.start === 0 ? 0
-                : (track.dists[range.start - 1] + track.dists[range.start]) / 2;
-            const toKm = range.end === track.lats.length - 1 ? track.total
-                : (track.dists[range.end] + track.dists[range.end + 1]) / 2;
+                : (track.cumulativeKm[range.start - 1] + track.cumulativeKm[range.start]) / 2;
+            const toKm = range.end === track.latitudes.length - 1 ? track.totalKm
+                : (track.cumulativeKm[range.end] + track.cumulativeKm[range.end + 1]) / 2;
             return {
                 ...range,
                 fromKm,
                 toKm,
                 km: toKm - fromKm,
-                anchor: indexAtDistance(track.dists, (fromKm + toKm) / 2),
+                anchor: indexAtDistance(track.cumulativeKm, (fromKm + toKm) / 2),
             };
         });
     }
 
     function residentialCacheKey(activityId) {
-        return `${RESIDENTIAL_CACHE_PREFIX}${activityId}`;
+        return `${CACHE_PREFIX.residential}${activityId}`;
     }
 
     function trackSignature(track) {
-        const last = track.lats.length - 1;
+        const last = track.latitudes.length - 1;
         return [
-            track.lats.length,
-            track.total.toFixed(3),
-            track.lats[0].toFixed(5),
-            track.lons[0].toFixed(5),
-            track.lats[last].toFixed(5),
-            track.lons[last].toFixed(5),
+            track.latitudes.length,
+            track.totalKm.toFixed(3),
+            track.latitudes[0].toFixed(5),
+            track.longitudes[0].toFixed(5),
+            track.latitudes[last].toFixed(5),
+            track.longitudes[last].toFixed(5),
             CONFIG.residentialBufferM,
         ].join(':');
     }
 
+    function isValidCachedRange(range, trackLength) {
+        return Number.isInteger(range.start)
+            && Number.isInteger(range.end)
+            && Number.isInteger(range.anchor)
+            && range.start >= 0
+            && range.end >= range.start
+            && range.anchor >= range.start
+            && range.anchor <= range.end
+            && range.end < trackLength
+            && Number.isFinite(range.fromKm)
+            && Number.isFinite(range.toKm)
+            && Number.isFinite(range.km);
+    }
+
     function cachedResidentialRanges(activityId, track) {
         const key = residentialCacheKey(activityId);
-        const stored = localStorage.getItem(key);
-        if (!stored) return null;
-        try {
-            const value = JSON.parse(stored);
-            const maxAge = CONFIG.residentialCacheDays * 24 * 60 * 60 * 1000;
-            const hasInvalidRange = !Array.isArray(value.ranges) || value.ranges.some(range =>
-                !Number.isInteger(range.start)
-                || !Number.isInteger(range.end)
-                || !Number.isInteger(range.anchor)
-                || range.start < 0
-                || range.end < range.start
-                || range.anchor < range.start
-                || range.anchor > range.end
-                || range.end >= track.lats.length
-                || !Number.isFinite(range.fromKm)
-                || !Number.isFinite(range.toKm)
-                || !Number.isFinite(range.km));
-            if (value.signature !== trackSignature(track)
-                || !Number.isFinite(value.savedAt)
-                || Date.now() - value.savedAt > maxAge
-                || hasInvalidRange) {
-                return null;
-            }
-            return value.ranges;
-        } catch {
+        const value = readJsonCache(key);
+        if (!value) return null;
+
+        const maxAge = CONFIG.residentialCacheDays * 24 * 60 * 60 * 1000;
+        const isValid = value.signature === trackSignature(track)
+            && Number.isFinite(value.savedAt)
+            && Date.now() - value.savedAt <= maxAge
+            && Array.isArray(value.ranges)
+            && value.ranges.every(range => isValidCachedRange(range, track.latitudes.length));
+        if (!isValid) {
             localStorage.removeItem(key);
             return null;
         }
+        return value.ranges;
     }
 
     function cacheResidentialRanges(activityId, track, ranges) {
-        try {
-            localStorage.setItem(residentialCacheKey(activityId), JSON.stringify({
-                signature: trackSignature(track),
-                savedAt: Date.now(),
-                ranges,
-            }));
-        } catch {
-            // localStorage can be unavailable or full; cache misses are harmless.
-        }
+        writeJsonCache(residentialCacheKey(activityId), {
+            signature: trackSignature(track),
+            savedAt: Date.now(),
+            ranges,
+        });
     }
 
     function residentialOverpassQuery(points, radiusM) {
         const line = points
-            .map(p => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(',');
-        return `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeout / 1000)}];\n`
+            .map(point => `${point.lat.toFixed(6)},${point.lon.toFixed(6)}`).join(',');
+        return `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeoutMs / 1000)}];\n`
             + `(way["landuse"="residential"](around:${radiusM},${line});`
             + `relation["landuse"="residential"](around:${radiusM},${line}););\n`
             + 'out body geom;';
     }
 
     function overpassRetryDelay(response, attempt) {
-        const exponentialDelay = CONFIG.overpassRetryDelay * 2 ** (attempt - 1);
+        const exponentialDelay = CONFIG.overpassRetryBaseMs * 2 ** (attempt - 1);
         const retryAfter = response?.headers?.get?.('Retry-After');
         if (!retryAfter) return exponentialDelay;
 
@@ -419,15 +463,28 @@
         return Math.max(exponentialDelay, serverDelay);
     }
 
+    async function parseOverpassElements(response) {
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error('Overpass returned invalid JSON');
+        }
+        if (!Array.isArray(data?.elements)) {
+            throw new Error('Overpass response has no OSM elements');
+        }
+        return data.elements;
+    }
+
     async function fetchOverpassElements(points, radiusM, onRetry) {
         const query = residentialOverpassQuery(points, radiusM);
-        const attempts = Math.max(1, Math.floor(CONFIG.overpassAttempts));
-        let lastError;
+        const attempts = Math.max(1, Math.floor(CONFIG.overpassMaxAttempts));
+        let failure = new Error('Failed to load OSM residential areas');
 
         for (let attempt = 1; attempt <= attempts; attempt++) {
             let response;
             try {
-                response = await fetch(OVERPASS_URL, {
+                response = await fetch(API_URL.overpass, {
                     method: 'POST',
                     headers: {
                         'Accept': 'application/json',
@@ -436,36 +493,24 @@
                     body: `data=${encodeURIComponent(query)}`,
                 });
             } catch (error) {
-                lastError = new Error(`Failed to load OSM residential areas: ${error?.message || 'network error'}`);
+                failure = new Error(`Failed to load OSM residential areas: ${errorMessage(error)}`);
             }
 
-            if (response?.ok) {
-                let data;
-                try {
-                    data = await response.json();
-                } catch {
-                    throw new Error('Overpass returned invalid JSON');
-                }
-                if (!Array.isArray(data?.elements)) {
-                    throw new Error('Overpass response has no OSM elements');
-                }
-                return data.elements;
-            }
+            if (response?.ok) return parseOverpassElements(response);
 
             if (response) {
-                lastError = new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
-                if (!TRANSIENT_OVERPASS_STATUSES.has(response.status)) throw lastError;
+                failure = new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
+                if (!TRANSIENT_OVERPASS_STATUSES.has(response.status)) throw failure;
             }
-            if (attempt === attempts) break;
+            if (attempt === attempts) throw failure;
 
             const delay = overpassRetryDelay(response, attempt);
-            onRetry?.(delay, response?.status || null);
-            console.warn(`[Strava Renamer] ${lastError.message}; retrying in ${(delay / 1000).toFixed(1)}s`
+            onRetry?.(delay);
+            console.warn(`${LOG_PREFIX} ${failure.message}; retrying in ${(delay / 1000).toFixed(1)}s`
                 + ` (${attempt}/${attempts})`);
             await sleep(delay);
         }
-
-        throw lastError;
+        throw failure;
     }
 
     async function fetchResidentialAreas(track, onRetry) {
@@ -488,7 +533,7 @@
     // a trailing parenthetical qualifier while preserving hyphenated names.
     function cleanPlaceName(name) {
         let cleaned = name.split(/\s+[-–—]\s+|\s*\/\s*/)[0];
-        if (CONFIG.stripParentheticals) {
+        if (CONFIG.stripPlaceParentheticals) {
             cleaned = cleaned.replace(/\s*\([^)]*\)\s*$/, '');
         }
         return cleaned.trim() || name;
@@ -499,7 +544,8 @@
     // not win and city/village districts do not replace their parent place.
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
     const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
-    const PRIMARY_SETTLEMENT_TYPES = new Set(['hamlet', 'village', 'town', 'city']);
+    const RURAL_PARENT_FIELDS = ['village', 'town'];
+    const SETTLEMENT_TYPES = new Set(['hamlet', 'village', 'town', 'city']);
 
     function addressPlaceNames(address, fields) {
         if (!address) return [];
@@ -512,40 +558,42 @@
         return names;
     }
 
-    function optionalPlaceName(value) {
+    function cleanOptionalPlaceName(value) {
         return typeof value === 'string' && value.trim() ? cleanPlaceName(value) : null;
     }
 
-    function placeNameOf(exactGeo, placeGeo) {
+    function resolvePlaceName(exactGeo, coarseGeo) {
         const address = exactGeo?.address || {};
         const primaryNames = addressPlaceNames(address, PRIMARY_ADDRESS_FIELDS);
         const districtNames = addressPlaceNames(address, DISTRICT_ADDRESS_FIELDS);
         const primaryName = primaryNames[0] || null;
         const districtName = districtNames[0] || null;
-        const placeName = optionalPlaceName(placeGeo?.name);
+        const coarseName = cleanOptionalPlaceName(coarseGeo?.name);
+        const coarseIsRelation = coarseGeo?.osmType === 'relation';
 
         // Prefer a coarse result that the exact address hierarchy confirms.
-        if (placeName && primaryNames.includes(placeName)) return placeName;
+        if (coarseName && primaryNames.includes(coarseName)) return coarseName;
 
         // Settlement relations identify the containing place directly.
-        if (placeName && placeGeo?.osmType === 'relation'
-            && PRIMARY_SETTLEMENT_TYPES.has(placeGeo?.addressType)) return placeName;
+        if (coarseName && coarseIsRelation && SETTLEMENT_TYPES.has(coarseGeo.addressType)) {
+            return coarseName;
+        }
 
         // Nominatim labels both urban and rural districts as suburb relations.
         // Collapse a district only when the exact hierarchy confirms its parent.
-        const isMatchingDistrictBoundary = placeName && placeGeo?.osmType === 'relation'
-            && placeGeo?.addressType === 'suburb' && districtNames.includes(placeName);
+        const isMatchingDistrictBoundary = coarseName && coarseIsRelation
+            && coarseGeo.addressType === 'suburb' && districtNames.includes(coarseName);
         if (isMatchingDistrictBoundary) {
-            if (address.city) return primaryName || placeName;
+            if (address.city) return primaryName || coarseName;
 
-            const ruralParent = addressPlaceNames(address, ['village', 'town'])[0] || null;
-            const municipality = optionalPlaceName(address.municipality);
+            const ruralParent = addressPlaceNames(address, RURAL_PARENT_FIELDS)[0] || null;
+            const municipality = cleanOptionalPlaceName(address.municipality);
             if (ruralParent && municipality && ruralParent === municipality) return ruralParent;
-            return placeName;
+            return coarseName;
         }
 
         // A nearby unrelated place node must not override the exact hierarchy.
-        const cityDistrict = optionalPlaceName(address.city_district);
+        const cityDistrict = cleanOptionalPlaceName(address.city_district);
         return cityDistrict || primaryName || districtName;
     }
 
@@ -557,19 +605,13 @@
             get apiCalls() { return apiCalls; },
             async reverse(lat, lon, zoom) {
                 const key = geocodeCacheKey(lat, lon, zoom);
-                const stored = localStorage.getItem(key);
-                if (stored !== null) {
-                    try {
-                        return JSON.parse(stored);
-                    } catch {
-                        localStorage.removeItem(key);
-                    }
-                }
+                const cached = readJsonCache(key);
+                if (cached) return cached;
 
-                const wait = CONFIG.rateLimit - (Date.now() - lastCallAt);
-                if (wait > 0) await sleep(wait);
+                const waitMs = CONFIG.nominatimIntervalMs - (Date.now() - lastCallAt);
+                if (waitMs > 0) await sleep(waitMs);
 
-                apiCalls++;
+                apiCalls += 1;
                 const params = new URLSearchParams({
                     lat: String(lat),
                     lon: String(lon),
@@ -579,7 +621,7 @@
                     'accept-language': 'en',
                 });
                 try {
-                    const response = await fetch(`${NOMINATIM_URL}?${params}`, {
+                    const response = await fetch(`${API_URL.nominatim}?${params}`, {
                         headers: { 'Accept': 'application/json' },
                     });
                     if (!response.ok) {
@@ -592,15 +634,12 @@
                         name: data.name || null,
                         address: data.address ?? null,
                     };
-                    try {
-                        localStorage.setItem(key, JSON.stringify(geo));
-                    } catch {
-                        // A cache write failure must not prevent naming the route.
-                    }
+                    writeJsonCache(key, geo);
                     return geo;
                 } catch (error) {
-                    console.error('[Strava Renamer] Geocoding error:', error);
-                    throw new Error(`Nominatim failed at ${lat.toFixed(5)}, ${lon.toFixed(5)}: ${error.message}`);
+                    console.error(`${LOG_PREFIX} Geocoding error:`, error);
+                    const coordinate = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+                    throw new Error(`Nominatim failed at ${coordinate}: ${errorMessage(error)}`);
                 } finally {
                     lastCallAt = Date.now();
                 }
@@ -635,14 +674,14 @@
         for (let i = 0; i < ranges.length; i++) {
             onProgress?.(i + 1, ranges.length);
             const range = ranges[i];
-            const lat = track.lats[range.anchor];
-            const lon = track.lons[range.anchor];
+            const lat = track.latitudes[range.anchor];
+            const lon = track.longitudes[range.anchor];
             const exactGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimAddressZoom);
-            const placeGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimPlaceZoom);
-            const name = placeNameOf(exactGeo, placeGeo);
+            const coarseGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimPlaceZoom);
+            const name = resolvePlaceName(exactGeo, coarseGeo);
             const distanceLabel = `${range.fromKm.toFixed(2)}–${range.toKm.toFixed(2)} km`;
-            console.log(`[Strava Renamer] Residential ${distanceLabel}: ${name || 'no settlement address'}`
-                + ` (zoom ${CONFIG.nominatimPlaceZoom}: ${placeGeo?.name || 'none'})`);
+            log(`Residential ${distanceLabel}: ${name || 'no settlement address'}`
+                + ` (zoom ${CONFIG.nominatimPlaceZoom}: ${coarseGeo?.name || 'none'})`);
             if (!name) continue;
             const last = runs[runs.length - 1];
             if (last?.name === name) {
@@ -655,7 +694,7 @@
 
         const compacted = compactRouteRuns(runs);
         if (compacted.length < runs.length) {
-            console.log(`[Strava Renamer] Name compacted from ${runs.length} to ${compacted.length} places: `
+            log(`Name compacted from ${runs.length} to ${compacted.length} places: `
                 + compacted.map(run => run.name).join(' - '));
         }
         return compacted.map(run => run.name);
@@ -682,33 +721,33 @@
         const points = Array.from(xml.getElementsByTagName('trkpt'));
         if (points.length === 0) return null;
 
-        const lats = [];
-        const lons = [];
+        const latitudes = [];
+        const longitudes = [];
         for (const point of points) {
             const lat = Number.parseFloat(point.getAttribute('lat'));
             const lon = Number.parseFloat(point.getAttribute('lon'));
             if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
                 throw new Error('Downloaded GPX contains an invalid track point.');
             }
-            lats.push(lat);
-            lons.push(lon);
+            latitudes.push(lat);
+            longitudes.push(lon);
         }
 
-        const dists = [0];
-        for (let i = 1; i < lats.length; i++) {
-            dists.push(dists[i - 1] + getDistance(
-                lats[i - 1], lons[i - 1], lats[i], lons[i],
+        const cumulativeKm = [0];
+        for (let i = 1; i < latitudes.length; i++) {
+            cumulativeKm.push(cumulativeKm[i - 1] + haversineKm(
+                latitudes[i - 1], longitudes[i - 1], latitudes[i], longitudes[i],
             ));
         }
         return {
-            lats,
-            lons,
-            dists,
-            total: dists[dists.length - 1],
+            latitudes,
+            longitudes,
+            cumulativeKm,
+            totalKm: cumulativeKm[cumulativeKm.length - 1],
         };
     }
 
-    async function generateAndFillName(btn) {
+    async function generateAndFillName(button) {
         const activityId = getActivityId();
         if (!activityId) {
             alert(STRINGS.noId);
@@ -721,61 +760,63 @@
             return;
         }
 
-        btn.disabled = true;
-        setButtonState(btn, STRINGS.downloading, 'loading');
+        button.disabled = true;
+        setButtonState(button, STRINGS.downloading, 'loading');
 
         try {
             const gpxText = await downloadGpx(activityId);
-            setButtonState(btn, STRINGS.analyzing, 'loading');
+            setButtonState(button, STRINGS.analyzing, 'loading');
             const track = parseGpxTrack(gpxText);
             if (!track) {
                 alert(STRINGS.noGps);
                 return;
             }
-            console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${track.lats.length} trackpoints`);
+            log(`${track.totalKm.toFixed(1)} km, ${track.latitudes.length} trackpoints`);
 
-            setButtonState(btn, `${STRINGS.landuse}...`, 'loading');
+            setButtonState(button, `${STRINGS.landuse}...`, 'loading');
             const residential = await loadResidentialRanges(
                 activityId,
                 track,
                 delay => setButtonState(
-                    btn, `${STRINGS.overpassBusy} ${Math.ceil(delay / 1000)}s...`, 'loading'),
+                    button, `${STRINGS.overpassBusy} ${Math.ceil(delay / 1000)}s...`, 'loading'),
             );
-            console.log(`[Strava Renamer] ${residential.ranges.length} crossed residential stretches`
+            log(`${residential.ranges.length} crossed residential stretches`
                 + (residential.cached ? ' (cached)' : ` from ${residential.areaCount} OSM areas`));
             if (residential.ranges.length === 0) {
                 throw new Error('The route does not enter an OSM landuse=residential area.');
             }
 
-            setButtonState(btn, `${STRINGS.geocoding}...`, 'loading');
+            setButtonState(button, `${STRINGS.geocoding}...`, 'loading');
             const geocoder = createGeocoder();
             const places = await routePlaceNames(
                 residential.ranges,
                 track,
                 geocoder,
                 (done, total) => setButtonState(
-                    btn, `${STRINGS.geocoding} ${done}/${total}...`, 'loading'),
+                    button, `${STRINGS.geocoding} ${done}/${total}...`, 'loading'),
             );
             if (places.length === 0) {
-                throw new Error('Residential areas were crossed, but Nominatim returned no settlement address.');
+                throw new Error(
+                    'Residential areas were crossed, but Nominatim returned no settlement address.',
+                );
             }
             const newName = places.join(' - ');
-            console.log(`[Strava Renamer] ${residential.ranges.length} addresses, ${geocoder.apiCalls} API calls`);
-            console.log(`[Strava Renamer] Name: ${newName}`);
+            log(`${residential.ranges.length} addresses, ${geocoder.apiCalls} API calls`);
+            log(`Name: ${newName}`);
 
             nameInput.value = newName;
             nameInput.dispatchEvent(new Event('input', { bubbles: true }));
             nameInput.focus();
-            setButtonState(btn, STRINGS.done, 'success');
-            await sleep(CONFIG.successDelay);
+            setButtonState(button, STRINGS.done, 'success');
+            await sleep(CONFIG.successStateMs);
         } catch (error) {
-            console.error('[Strava Renamer]', error);
-            alert(`Error:\n${error.message}`);
-            setButtonState(btn, STRINGS.error, 'error');
-            await sleep(CONFIG.errorDelay);
+            console.error(LOG_PREFIX, error);
+            alert(`Error:\n${errorMessage(error)}`);
+            setButtonState(button, STRINGS.error, 'error');
+            await sleep(CONFIG.errorStateMs);
         } finally {
-            btn.disabled = false;
-            setButtonState(btn, STRINGS.idle);
+            button.disabled = false;
+            setButtonState(button, STRINGS.idle);
         }
     }
 
@@ -785,11 +826,11 @@
         const titleLabel = document.querySelector('label[for="activity_name"]');
         if (!titleLabel?.parentNode) return;
 
-        const btn = document.createElement('button');
-        btn.id = BUTTON_ID;
-        btn.type = 'button';
-        btn.title = 'Generate name from GPS track';
-        Object.assign(btn.style, {
+        const button = document.createElement('button');
+        button.id = BUTTON_ID;
+        button.type = 'button';
+        button.title = 'Generate name from GPS track';
+        Object.assign(button.style, {
             marginLeft: 'auto',
             verticalAlign: 'middle',
             fontSize: '12px',
@@ -799,20 +840,20 @@
             borderRadius: '3px',
             cursor: 'pointer',
         });
-        setButtonState(btn, STRINGS.idle);
-        btn.addEventListener('mouseenter', () => {
-            if (btn.dataset.state === 'idle') {
-                btn.style.backgroundColor = BUTTON_COLORS.hover;
+        setButtonState(button, STRINGS.idle);
+        button.addEventListener('mouseenter', () => {
+            if (button.dataset.state === 'idle') {
+                button.style.backgroundColor = BUTTON_COLORS.hover;
             }
         });
-        btn.addEventListener('mouseleave', () => {
-            if (btn.dataset.state === 'idle') {
-                btn.style.backgroundColor = BUTTON_COLORS.idle;
+        button.addEventListener('mouseleave', () => {
+            if (button.dataset.state === 'idle') {
+                button.style.backgroundColor = BUTTON_COLORS.idle;
             }
         });
-        btn.addEventListener('click', event => {
+        button.addEventListener('click', event => {
             event.preventDefault();
-            void generateAndFillName(btn);
+            void generateAndFillName(button);
         });
 
         const wrapper = document.createElement('div');
@@ -821,8 +862,8 @@
             alignItems: 'center',
         });
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-        wrapper.append(titleLabel, btn);
-        console.log('[Strava Renamer] Button injected');
+        wrapper.append(titleLabel, button);
+        log('Button injected');
     }
 
     new MutationObserver(injectButton).observe(document.body, { childList: true, subtree: true });
