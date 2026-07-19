@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    https://tampermonkey.net/
-// @version      4.3.3
-// @description  Names Strava activities from the OSM residential areas actually crossed by the route
+// @version      4.4.3
+// @description  Names Strava activities from crossed OSM residential areas with custom favorite places
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
 // @grant        none
@@ -20,6 +20,7 @@
         overpassMaxAttempts: 3,
         overpassRetryBaseMs: 5000,
         maxNamePlaces: 7,
+        favoriteRadiusM: 200,
         stripPlaceParentheticals: true,
         geocodeCachePrecision: 4,
         nominatimIntervalMs: 1050,
@@ -44,13 +45,19 @@
 
     const API_URL = {
         nominatim: 'https://nominatim.openstreetmap.org/reverse',
+        nominatimSearch: 'https://nominatim.openstreetmap.org/search',
         overpass: 'https://overpass-api.de/api/interpreter',
     };
     const CACHE_PREFIX = {
         geocode: 'strava_geocode_v9_',
         residential: 'strava_residential_v1_',
     };
+    const STORAGE_KEY = {
+        favorites: 'strava_route_favorites_v1',
+    };
     const BUTTON_ID = 'strava-route-rename-btn';
+    const FAVORITES_BUTTON_ID = 'strava-route-favorites-btn';
+    const FAVORITES_DIALOG_ID = 'strava-route-favorites-dialog';
     const LOG_PREFIX = '[Strava Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
     const BUTTON_COLORS = {
@@ -60,9 +67,26 @@
         success: '#4caf50',
         error: '#f44336',
     };
+    let lastRouteAnalysis = null;
+    let lastNominatimCallAt = 0;
+    let nominatimQueue = Promise.resolve();
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const log = message => console.log(`${LOG_PREFIX} ${message}`);
+
+    function requestNominatim(url) {
+        const request = nominatimQueue.then(async () => {
+            const waitMs = CONFIG.nominatimIntervalMs - (Date.now() - lastNominatimCallAt);
+            if (waitMs > 0) await sleep(waitMs);
+            try {
+                return await fetch(url, { headers: { 'Accept': 'application/json' } });
+            } finally {
+                lastNominatimCallAt = Date.now();
+            }
+        });
+        nominatimQueue = request.catch(() => undefined);
+        return request;
+    }
 
     function errorMessage(error) {
         return error instanceof Error ? error.message : String(error);
@@ -85,6 +109,45 @@
         } catch {
             // Cache failures must not prevent naming the route.
         }
+    }
+
+    function normalizeFavorite(value) {
+        if (!value || typeof value !== 'object') return null;
+        const name = typeof value.name === 'string' ? value.name.trim().replace(/\s+/g, ' ') : '';
+        const lat = Number(value.lat);
+        const lon = Number(value.lon);
+        const radiusM = Number(value.radiusM);
+        if (!value.id || !name || name.length > 80
+            || !Number.isFinite(lat) || lat < -90 || lat > 90
+            || !Number.isFinite(lon) || lon < -180 || lon > 180
+            || !Number.isFinite(radiusM) || radiusM < 10 || radiusM > 5000) {
+            return null;
+        }
+        return {
+            id: String(value.id),
+            name,
+            lat,
+            lon,
+            radiusM: Math.round(radiusM),
+            address: typeof value.address === 'string' ? value.address.trim() : '',
+        };
+    }
+
+    function loadFavorites() {
+        const stored = readJsonCache(STORAGE_KEY.favorites);
+        if (!Array.isArray(stored)) return [];
+        return stored.map(normalizeFavorite).filter(Boolean);
+    }
+
+    function saveFavorites(favorites) {
+        const normalized = favorites.map(normalizeFavorite).filter(Boolean);
+        writeJsonCache(STORAGE_KEY.favorites, normalized);
+        updateFavoritesButtonLabel(normalized.length);
+        return normalized;
+    }
+
+    function createFavoriteId() {
+        return `favorite_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
     function geocodeCacheKey(lat, lon, zoom) {
@@ -540,8 +603,9 @@
     }
 
     // Zoom 18 gives the exact address hierarchy; zoom 14 gives the local
-    // settlement/boundary. Reconcile both levels so a nearby place node does
-    // not win and city/village districts do not replace their parent place.
+    // settlement/boundary. Every passage uses the same priority: a named
+    // settlement, then its district, then the containing city.
+    const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
     const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
     const RURAL_PARENT_FIELDS = ['village', 'town'];
@@ -562,17 +626,36 @@
         return typeof value === 'string' && value.trim() ? cleanPlaceName(value) : null;
     }
 
+    function formatAddress(address) {
+        if (!address) return '';
+        const parts = [];
+        const add = value => {
+            const cleaned = cleanOptionalPlaceName(value);
+            if (cleaned && !parts.includes(cleaned)) parts.push(cleaned);
+        };
+
+        const road = cleanOptionalPlaceName(address.road);
+        const houseNumber = typeof address.house_number === 'string' ? address.house_number.trim() : '';
+        if (road) parts.push(houseNumber ? `${road} ${houseNumber}` : road);
+        for (const field of ['hamlet', 'village', 'town', 'city_district', 'suburb', 'city']) {
+            add(address[field]);
+        }
+        return parts.join(', ');
+    }
+
     function resolvePlaceName(exactGeo, coarseGeo) {
         const address = exactGeo?.address || {};
+        const localSettlementName = addressPlaceNames(address, LOCAL_SETTLEMENT_FIELDS)[0] || null;
         const primaryNames = addressPlaceNames(address, PRIMARY_ADDRESS_FIELDS);
         const districtNames = addressPlaceNames(address, DISTRICT_ADDRESS_FIELDS);
         const primaryName = primaryNames[0] || null;
         const districtName = districtNames[0] || null;
+        const preferredExactName = localSettlementName || districtName || primaryName;
         const coarseName = cleanOptionalPlaceName(coarseGeo?.name);
         const coarseIsRelation = coarseGeo?.osmType === 'relation';
 
-        // Prefer a coarse result that the exact address hierarchy confirms.
-        if (coarseName && primaryNames.includes(coarseName)) return coarseName;
+        // A confirmed city must not hide a more specific settlement or district.
+        if (coarseName && primaryNames.includes(coarseName)) return preferredExactName;
 
         // Settlement relations identify the containing place directly.
         if (coarseName && coarseIsRelation && SETTLEMENT_TYPES.has(coarseGeo.addressType)) {
@@ -580,11 +663,10 @@
         }
 
         // Nominatim labels both urban and rural districts as suburb relations.
-        // Collapse a district only when the exact hierarchy confirms its parent.
         const isMatchingDistrictBoundary = coarseName && coarseIsRelation
             && coarseGeo.addressType === 'suburb' && districtNames.includes(coarseName);
         if (isMatchingDistrictBoundary) {
-            if (address.city) return primaryName || coarseName;
+            if (address.city) return localSettlementName || coarseName;
 
             const ruralParent = addressPlaceNames(address, RURAL_PARENT_FIELDS)[0] || null;
             const municipality = cleanOptionalPlaceName(address.municipality);
@@ -593,13 +675,11 @@
         }
 
         // A nearby unrelated place node must not override the exact hierarchy.
-        const cityDistrict = cleanOptionalPlaceName(address.city_district);
-        return cityDistrict || primaryName || districtName;
+        return preferredExactName;
     }
 
     // The zoom is part of the key because each level has a different role.
     function createGeocoder() {
-        let lastCallAt = 0;
         let apiCalls = 0;
         return {
             get apiCalls() { return apiCalls; },
@@ -607,9 +687,6 @@
                 const key = geocodeCacheKey(lat, lon, zoom);
                 const cached = readJsonCache(key);
                 if (cached) return cached;
-
-                const waitMs = CONFIG.nominatimIntervalMs - (Date.now() - lastCallAt);
-                if (waitMs > 0) await sleep(waitMs);
 
                 apiCalls += 1;
                 const params = new URLSearchParams({
@@ -621,9 +698,7 @@
                     'accept-language': 'en',
                 });
                 try {
-                    const response = await fetch(`${API_URL.nominatim}?${params}`, {
-                        headers: { 'Accept': 'application/json' },
-                    });
+                    const response = await requestNominatim(`${API_URL.nominatim}?${params}`);
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
                     }
@@ -640,37 +715,219 @@
                     console.error(`${LOG_PREFIX} Geocoding error:`, error);
                     const coordinate = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
                     throw new Error(`Nominatim failed at ${coordinate}: ${errorMessage(error)}`);
-                } finally {
-                    lastCallAt = Date.now();
                 }
             },
         };
     }
 
+    function favoriteCandidateFromSearchResult(result) {
+        const lat = Number(result?.lat);
+        const lon = Number(result?.lon);
+        const address = typeof result?.display_name === 'string' ? result.display_name.trim() : '';
+        if (!Number.isFinite(lat) || lat < -90 || lat > 90
+            || !Number.isFinite(lon) || lon < -180 || lon > 180 || !address) {
+            return null;
+        }
+
+        const resultName = cleanOptionalPlaceName(result.name);
+        const meaningfulResultName = resultName && !/^\d+[a-z]?$/i.test(resultName) ? resultName : null;
+        const placeName = resolvePlaceName({ address: result.address }, null);
+        return {
+            lat,
+            lon,
+            address,
+            baseName: meaningfulResultName || placeName || formatAddress(result.address) || address,
+        };
+    }
+
+    async function searchFavoriteAddresses(query) {
+        const params = new URLSearchParams({
+            q: query,
+            format: 'jsonv2',
+            addressdetails: '1',
+            dedupe: '1',
+            limit: '5',
+            'accept-language': 'en',
+        });
+        const response = await requestNominatim(`${API_URL.nominatimSearch}?${params}`);
+        if (!response.ok) throw new Error(`Address search failed: HTTP ${response.status}`);
+
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error('Address search returned an invalid response.');
+        return data.map(favoriteCandidateFromSearchResult).filter(Boolean);
+    }
+
+    function closestFavoriteForPassage(passage, track, favorites) {
+        let best = null;
+        for (const favorite of favorites) {
+            let distanceM = Infinity;
+            let closestIndex = passage.start;
+            for (let index = passage.start; index <= passage.end; index++) {
+                const pointDistanceM = haversineKm(
+                    favorite.lat,
+                    favorite.lon,
+                    track.latitudes[index],
+                    track.longitudes[index],
+                ) * 1000;
+                if (pointDistanceM < distanceM) {
+                    distanceM = pointDistanceM;
+                    closestIndex = index;
+                }
+                if (distanceM < 0.5) break;
+            }
+            if (distanceM <= favorite.radiusM && (!best || distanceM < best.distanceM)) {
+                best = { favorite, distanceM, index: closestIndex };
+            }
+        }
+        return best;
+    }
+
+    function favoriteVisits(track, favorites) {
+        const visits = [];
+        for (const favorite of favorites) {
+            let visit = null;
+            const finishVisit = () => {
+                if (!visit) return;
+                const fromKm = visit.start === 0 ? 0
+                    : (track.cumulativeKm[visit.start - 1] + track.cumulativeKm[visit.start]) / 2;
+                const toKm = visit.end === track.latitudes.length - 1 ? track.totalKm
+                    : (track.cumulativeKm[visit.end] + track.cumulativeKm[visit.end + 1]) / 2;
+                visits.push({
+                    ...visit,
+                    favorite,
+                    fromKm,
+                    toKm,
+                    km: toKm - fromKm,
+                });
+                visit = null;
+            };
+
+            for (let index = 0; index < track.latitudes.length; index++) {
+                const distanceM = haversineKm(
+                    favorite.lat,
+                    favorite.lon,
+                    track.latitudes[index],
+                    track.longitudes[index],
+                ) * 1000;
+                if (distanceM <= favorite.radiusM) {
+                    if (!visit) {
+                        visit = { start: index, end: index, index, distanceM };
+                    } else {
+                        visit.end = index;
+                        if (distanceM < visit.distanceM) {
+                            visit.index = index;
+                            visit.distanceM = distanceM;
+                        }
+                    }
+                } else {
+                    finishVisit();
+                }
+            }
+            finishVisit();
+        }
+        return visits.sort((a, b) => a.index - b.index || a.distanceM - b.distanceM);
+    }
+
+    function trackRangesOverlap(first, second) {
+        return first.start <= second.end && second.start <= first.end;
+    }
+
     // Limit only the displayed narrative; every crossed residential stretch
-    // remains valid and is still geocoded. Every passage is assessed on its
-    // own residential distance, regardless of its name or direction. Start
-    // and finish are protected.
+    // remains valid and is still geocoded. Favorite visits are detected over
+    // the complete track. Start, finish, and favorite events are protected.
     function compactRouteRuns(runs) {
         const limit = Math.max(2, Math.floor(CONFIG.maxNamePlaces));
         const kept = runs.map(run => ({ ...run }));
 
         while (kept.length > limit && kept.length > 2) {
-            let removeAt = 1;
-            for (let i = 2; i < kept.length - 1; i++) {
-                if (kept[i].km < kept[removeAt].km) removeAt = i;
+            let removeAt = -1;
+            for (let i = 1; i < kept.length - 1; i++) {
+                if (kept[i].favorite) continue;
+                if (removeAt < 0 || kept[i].km < kept[removeAt].km) removeAt = i;
             }
-
+            if (removeAt < 0) break;
             kept.splice(removeAt, 1);
         }
         return kept;
     }
 
-    // Every continuous residential stretch contributes exactly one address in
-    // travel order. Adjacent duplicates merge immediately; every later revisit
-    // of a selected place remains visible.
-    async function routePlaceNames(ranges, track, geocoder, onProgress) {
+    function routeNamesFromPassages(passages, track, favorites, shouldLog = false) {
+        const visits = favoriteVisits(track, favorites);
+        const coveredVisits = new Set();
+        const events = [];
+        for (const passage of passages) {
+            const match = closestFavoriteForPassage(passage, track, favorites);
+            const name = match?.favorite.name || passage.baseName;
+            if (!name) continue;
+
+            if (match) {
+                for (const visit of visits) {
+                    if (visit.favorite.id === match.favorite.id && trackRangesOverlap(visit, passage)) {
+                        coveredVisits.add(visit);
+                    }
+                }
+            }
+
+            if (shouldLog && match) {
+                const distanceLabel = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
+                log(`Favorite ${distanceLabel}: ${match.favorite.name}`
+                    + ` (${match.distanceM.toFixed(0)} m from saved address)`);
+            }
+
+            events.push({
+                name,
+                km: passage.km,
+                fromKm: passage.fromKm,
+                toKm: passage.toKm,
+                favorite: Boolean(match),
+                orderIndex: match?.index ?? passage.anchor,
+            });
+        }
+
+        for (const visit of visits) {
+            if (coveredVisits.has(visit)) continue;
+            if (shouldLog) {
+                const distanceLabel = `${visit.fromKm.toFixed(2)}–${visit.toKm.toFixed(2)} km`;
+                log(`Favorite ${distanceLabel}: ${visit.favorite.name}`
+                    + ` (${visit.distanceM.toFixed(0)} m from saved address; full-track visit)`);
+            }
+            events.push({
+                name: visit.favorite.name,
+                km: visit.km,
+                fromKm: visit.fromKm,
+                toKm: visit.toKm,
+                favorite: true,
+                orderIndex: visit.index,
+            });
+        }
+
+        events.sort((a, b) => a.orderIndex - b.orderIndex);
         const runs = [];
+        for (const event of events) {
+            const last = runs[runs.length - 1];
+            if (last?.name === event.name) {
+                last.km += event.km;
+                last.fromKm = Math.min(last.fromKm, event.fromKm);
+                last.toKm = Math.max(last.toKm, event.toKm);
+                last.favorite ||= event.favorite;
+            } else {
+                runs.push({ ...event });
+            }
+        }
+
+        const compacted = compactRouteRuns(runs);
+        if (shouldLog && compacted.length < runs.length) {
+            log(`Name compacted from ${runs.length} to ${compacted.length} places: `
+                + compacted.map(run => run.name).join(' - '));
+        }
+        return compacted.map(run => run.name);
+    }
+
+    // Every continuous residential stretch contributes exactly one address in
+    // travel order. Favorites are also detected between residential stretches.
+    // Adjacent duplicates merge immediately; every later revisit remains visible.
+    async function routePlaceNames(ranges, track, geocoder, onProgress) {
+        const passages = [];
         for (let i = 0; i < ranges.length; i++) {
             onProgress?.(i + 1, ranges.length);
             const range = ranges[i];
@@ -678,26 +935,23 @@
             const lon = track.longitudes[range.anchor];
             const exactGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimAddressZoom);
             const coarseGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimPlaceZoom);
-            const name = resolvePlaceName(exactGeo, coarseGeo);
+            const baseName = resolvePlaceName(exactGeo, coarseGeo);
             const distanceLabel = `${range.fromKm.toFixed(2)}–${range.toKm.toFixed(2)} km`;
-            log(`Residential ${distanceLabel}: ${name || 'no settlement address'}`
+            log(`Residential ${distanceLabel}: ${baseName || 'no settlement address'}`
                 + ` (zoom ${CONFIG.nominatimPlaceZoom}: ${coarseGeo?.name || 'none'})`);
-            if (!name) continue;
-            const last = runs[runs.length - 1];
-            if (last?.name === name) {
-                last.km += range.km;
-                last.toKm = range.toKm;
-            } else {
-                runs.push({ name, km: range.km, fromKm: range.fromKm, toKm: range.toKm });
-            }
+            passages.push({
+                ...range,
+                lat,
+                lon,
+                baseName,
+                address: formatAddress(exactGeo?.address),
+            });
         }
 
-        const compacted = compactRouteRuns(runs);
-        if (compacted.length < runs.length) {
-            log(`Name compacted from ${runs.length} to ${compacted.length} places: `
-                + compacted.map(run => run.name).join(' - '));
-        }
-        return compacted.map(run => run.name);
+        return {
+            names: routeNamesFromPassages(passages, track, loadFavorites(), true),
+            passages,
+        };
     }
 
     function getActivityId() {
@@ -747,6 +1001,402 @@
         };
     }
 
+    function updateFavoritesButtonLabel(count = loadFavorites().length) {
+        const favoriteCount = count;
+        const button = document.getElementById(FAVORITES_BUTTON_ID);
+        if (!button) return;
+        button.textContent = favoriteCount > 0 ? `★ ${favoriteCount}` : '☆';
+        button.title = favoriteCount > 0
+            ? `Manage ${favoriteCount} favorite address${favoriteCount === 1 ? '' : 'es'}`
+            : 'Add and manage favorite addresses';
+    }
+
+    function setActivityName(names) {
+        if (!names.length) return false;
+        const nameInput = document.querySelector('input[name="activity[name]"]');
+        if (!nameInput) return false;
+        nameInput.value = names.join(' - ');
+        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+        nameInput.focus();
+        return true;
+    }
+
+    function refreshActivityNameFromFavorites() {
+        if (!lastRouteAnalysis || lastRouteAnalysis.activityId !== getActivityId()) return;
+        const names = routeNamesFromPassages(
+            lastRouteAnalysis.passages,
+            lastRouteAnalysis.track,
+            loadFavorites(),
+        );
+        if (setActivityName(names)) log(`Name updated from favorites: ${names.join(' - ')}`);
+    }
+
+    function promptFavorite(existing, passage) {
+        const defaultName = existing?.name || passage?.baseName || passage?.address || '';
+        const enteredName = window.prompt('Custom name for this address:', defaultName);
+        if (enteredName === null) return null;
+        const name = enteredName.trim().replace(/\s+/g, ' ');
+        if (!name || name.length > 80) {
+            alert('Custom name must contain 1–80 characters.');
+            return null;
+        }
+
+        const enteredRadius = window.prompt(
+            'Matching radius in metres (10–5000):',
+            String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
+        );
+        if (enteredRadius === null) return null;
+        const radiusM = Number(enteredRadius.replace(',', '.'));
+        if (!Number.isFinite(radiusM) || radiusM < 10 || radiusM > 5000) {
+            alert('Radius must be a number from 10 to 5000 metres.');
+            return null;
+        }
+
+        return normalizeFavorite({
+            id: existing?.id || createFavoriteId(),
+            name,
+            lat: existing?.lat ?? passage.lat,
+            lon: existing?.lon ?? passage.lon,
+            radiusM,
+            address: existing?.address || passage.address || passage.baseName || '',
+        });
+    }
+
+    function saveFavorite(existing, passage) {
+        const favorite = promptFavorite(existing, passage);
+        if (!favorite) return false;
+        const favorites = loadFavorites();
+        const index = favorites.findIndex(item => item.id === favorite.id);
+        if (index >= 0) {
+            favorites[index] = favorite;
+        } else {
+            favorites.push(favorite);
+        }
+        saveFavorites(favorites);
+        refreshActivityNameFromFavorites();
+        return true;
+    }
+
+    function removeFavorite(favorite) {
+        if (!window.confirm(`Delete favorite "${favorite.name}"?`)) return false;
+        const favorites = loadFavorites().filter(item => item.id !== favorite.id);
+        saveFavorites(favorites);
+        refreshActivityNameFromFavorites();
+        return true;
+    }
+
+    async function runFavoriteAction(action) {
+        try {
+            await action();
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Favorite address error:`, error);
+            alert(`Favorite address error:\n${errorMessage(error)}`);
+        }
+    }
+
+    function createDialogButton(text, primary = false) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = text;
+        Object.assign(button.style, {
+            flex: '0 0 auto',
+            padding: '5px 9px',
+            color: primary ? 'white' : '#242428',
+            backgroundColor: primary ? BUTTON_COLORS.idle : '#f3f3f3',
+            border: '1px solid #d5d5d5',
+            borderRadius: '4px',
+            cursor: 'pointer',
+        });
+        return button;
+    }
+
+    function appendFavoriteRow(container, title, details, actions) {
+        const row = document.createElement('div');
+        Object.assign(row.style, {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '8px 0',
+            borderBottom: '1px solid #eee',
+        });
+
+        const text = document.createElement('div');
+        text.style.flex = '1 1 auto';
+        const heading = document.createElement('div');
+        heading.textContent = title;
+        heading.style.fontWeight = '600';
+        const description = document.createElement('div');
+        description.textContent = details;
+        Object.assign(description.style, {
+            marginTop: '2px',
+            color: '#666',
+            fontSize: '12px',
+            overflowWrap: 'anywhere',
+        });
+        text.append(heading, description);
+
+        const controls = document.createElement('div');
+        Object.assign(controls.style, {
+            display: 'flex',
+            gap: '6px',
+        });
+        controls.append(...actions);
+        row.append(text, controls);
+        container.append(row);
+    }
+
+    function appendManualFavoriteSearch(panel, closeDialog) {
+        const title = document.createElement('h4');
+        title.textContent = 'Add by address';
+        title.style.margin = '0 0 6px';
+
+        const form = document.createElement('form');
+        Object.assign(form.style, {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+        });
+
+        const input = document.createElement('input');
+        input.id = 'strava-route-favorite-address-input';
+        input.type = 'text';
+        input.placeholder = 'Street, house number, city';
+        input.autocomplete = 'street-address';
+        input.maxLength = 200;
+        Object.assign(input.style, {
+            flex: '1 1 auto',
+            minWidth: '0',
+            padding: '7px 9px',
+            color: '#242428',
+            background: 'white',
+            border: '1px solid #d5d5d5',
+            borderRadius: '4px',
+        });
+
+        const searchButton = createDialogButton('Find', true);
+        searchButton.type = 'submit';
+        form.append(input, searchButton);
+
+        const status = document.createElement('div');
+        status.setAttribute('aria-live', 'polite');
+        Object.assign(status.style, {
+            minHeight: '18px',
+            marginTop: '5px',
+            color: '#666',
+            fontSize: '12px',
+        });
+
+        const results = document.createElement('div');
+        const setStatus = (message, isError = false) => {
+            status.textContent = message;
+            status.style.color = isError ? BUTTON_COLORS.error : '#666';
+        };
+
+        const renderResults = candidates => {
+            results.replaceChildren();
+            for (const candidate of candidates) {
+                const addButton = createDialogButton('☆ Add', true);
+                addButton.addEventListener('click', () => void runFavoriteAction(() => {
+                    if (!saveFavorite(null, candidate)) return;
+                    closeDialog();
+                    openFavoritesDialog();
+                }));
+                appendFavoriteRow(
+                    results,
+                    candidate.baseName,
+                    candidate.address,
+                    [addButton],
+                );
+            }
+        };
+
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            void runFavoriteAction(async () => {
+                const query = input.value.trim().replace(/\s+/g, ' ');
+                if (!query) {
+                    setStatus('Enter an address to search.', true);
+                    input.focus();
+                    return;
+                }
+
+                input.disabled = true;
+                searchButton.disabled = true;
+                results.replaceChildren();
+                setStatus('Searching…');
+                try {
+                    const candidates = await searchFavoriteAddresses(query);
+                    renderResults(candidates);
+                    setStatus(candidates.length
+                        ? `Found ${candidates.length}. Choose the correct address.`
+                        : 'No addresses found. Add a city or postcode and try again.',
+                    );
+                } catch (error) {
+                    console.error(`${LOG_PREFIX} Address search error:`, error);
+                    setStatus(`Search failed: ${errorMessage(error)}`, true);
+                } finally {
+                    input.disabled = false;
+                    searchButton.disabled = false;
+                    input.focus();
+                }
+            });
+        });
+
+        const attribution = document.createElement('div');
+        Object.assign(attribution.style, {
+            margin: '4px 0 18px',
+            color: '#888',
+            fontSize: '11px',
+        });
+        attribution.append('Search by Nominatim · © ');
+        const attributionLink = document.createElement('a');
+        attributionLink.href = 'https://www.openstreetmap.org/copyright';
+        attributionLink.target = '_blank';
+        attributionLink.rel = 'noopener noreferrer';
+        attributionLink.textContent = 'OpenStreetMap contributors';
+        attribution.append(attributionLink);
+
+        panel.append(title, form, status, results, attribution);
+    }
+
+    function openFavoritesDialog() {
+        document.getElementById(FAVORITES_DIALOG_ID)?.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = FAVORITES_DIALOG_ID;
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            inset: '0',
+            zIndex: '10000',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+            background: 'rgba(0, 0, 0, 0.45)',
+        });
+
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            width: 'min(680px, 100%)',
+            maxHeight: '85vh',
+            overflowY: 'auto',
+            padding: '18px',
+            color: '#242428',
+            background: 'white',
+            borderRadius: '8px',
+            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.3)',
+        });
+
+        const close = () => {
+            document.removeEventListener('keydown', onKeyDown);
+            overlay.remove();
+        };
+        const onKeyDown = event => {
+            if (event.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) close();
+        });
+
+        const header = document.createElement('div');
+        Object.assign(header.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+        });
+        const title = document.createElement('h3');
+        title.textContent = 'Favorite addresses';
+        title.style.margin = '0';
+        const closeButton = createDialogButton('Close');
+        closeButton.addEventListener('click', close);
+        header.append(title, closeButton);
+        panel.append(header);
+
+        const note = document.createElement('p');
+        note.textContent = 'A custom name applies whenever the route comes within the saved radius.';
+        Object.assign(note.style, {
+            margin: '8px 0 16px',
+            color: '#666',
+            fontSize: '13px',
+        });
+        panel.append(note);
+
+        appendManualFavoriteSearch(panel, close);
+
+        const favorites = loadFavorites();
+        const savedTitle = document.createElement('h4');
+        savedTitle.textContent = `Saved (${favorites.length})`;
+        savedTitle.style.margin = '0 0 4px';
+        panel.append(savedTitle);
+        if (favorites.length === 0) {
+            const empty = document.createElement('p');
+            empty.textContent = 'No favorite addresses yet.';
+            empty.style.color = '#666';
+            panel.append(empty);
+        } else {
+            for (const favorite of favorites) {
+                const editButton = createDialogButton('Edit');
+                editButton.addEventListener('click', () => runFavoriteAction(() => {
+                    if (!saveFavorite(favorite, null)) return;
+                    close();
+                    openFavoritesDialog();
+                }));
+                const deleteButton = createDialogButton('Delete');
+                deleteButton.addEventListener('click', () => runFavoriteAction(() => {
+                    if (!removeFavorite(favorite)) return;
+                    close();
+                    openFavoritesDialog();
+                }));
+                const coordinates = `${favorite.lat.toFixed(5)}, ${favorite.lon.toFixed(5)}`;
+                appendFavoriteRow(
+                    panel,
+                    `★ ${favorite.name}`,
+                    `${favorite.address || coordinates} · ${favorite.radiusM} m`,
+                    [editButton, deleteButton],
+                );
+            }
+        }
+
+        const routeTitle = document.createElement('h4');
+        routeTitle.textContent = 'Addresses on this route';
+        routeTitle.style.margin = '20px 0 4px';
+        panel.append(routeTitle);
+
+        const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
+        if (!analysis) {
+            const empty = document.createElement('p');
+            empty.textContent = 'Generate the route name first, then open favorites again.';
+            empty.style.color = '#666';
+            panel.append(empty);
+        } else {
+            for (const passage of analysis.passages) {
+                const match = closestFavoriteForPassage(passage, analysis.track, favorites);
+                const actionButton = createDialogButton(
+                    match ? `★ ${match.favorite.name}` : '☆ Add',
+                    !match,
+                );
+                actionButton.addEventListener('click', () => runFavoriteAction(() => {
+                    if (!saveFavorite(match?.favorite || null, passage)) return;
+                    close();
+                    openFavoritesDialog();
+                }));
+                const distance = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
+                const coordinates = `${passage.lat.toFixed(5)}, ${passage.lon.toFixed(5)}`;
+                appendFavoriteRow(
+                    panel,
+                    `${distance} · ${passage.baseName || 'Unknown place'}`,
+                    passage.address || coordinates,
+                    [actionButton],
+                );
+            }
+        }
+
+        overlay.append(panel);
+        document.body.append(overlay);
+    }
+
     async function generateAndFillName(button) {
         const activityId = getActivityId();
         if (!activityId) {
@@ -782,31 +1432,25 @@
             );
             log(`${residential.ranges.length} crossed residential stretches`
                 + (residential.cached ? ' (cached)' : ` from ${residential.areaCount} OSM areas`));
-            if (residential.ranges.length === 0) {
-                throw new Error('The route does not enter an OSM landuse=residential area.');
-            }
 
             setButtonState(button, `${STRINGS.geocoding}...`, 'loading');
             const geocoder = createGeocoder();
-            const places = await routePlaceNames(
+            const route = await routePlaceNames(
                 residential.ranges,
                 track,
                 geocoder,
                 (done, total) => setButtonState(
                     button, `${STRINGS.geocoding} ${done}/${total}...`, 'loading'),
             );
-            if (places.length === 0) {
-                throw new Error(
-                    'Residential areas were crossed, but Nominatim returned no settlement address.',
-                );
+            lastRouteAnalysis = { activityId, track, passages: route.passages };
+            if (route.names.length === 0) {
+                throw new Error('The route does not enter a named residential area or favorite radius.');
             }
-            const newName = places.join(' - ');
-            log(`${residential.ranges.length} addresses, ${geocoder.apiCalls} API calls`);
+            const newName = route.names.join(' - ');
+            log(`${residential.ranges.length} residential addresses, ${geocoder.apiCalls} API calls`);
             log(`Name: ${newName}`);
 
-            nameInput.value = newName;
-            nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-            nameInput.focus();
+            setActivityName(route.names);
             setButtonState(button, STRINGS.done, 'success');
             await sleep(CONFIG.successStateMs);
         } catch (error) {
@@ -856,13 +1500,33 @@
             void generateAndFillName(button);
         });
 
+        const favoritesButton = document.createElement('button');
+        favoritesButton.id = FAVORITES_BUTTON_ID;
+        favoritesButton.type = 'button';
+        Object.assign(favoritesButton.style, {
+            marginLeft: '6px',
+            verticalAlign: 'middle',
+            fontSize: '12px',
+            padding: '3px 9px',
+            color: BUTTON_COLORS.idle,
+            backgroundColor: 'white',
+            border: `1px solid ${BUTTON_COLORS.idle}`,
+            borderRadius: '3px',
+            cursor: 'pointer',
+        });
+        favoritesButton.addEventListener('click', event => {
+            event.preventDefault();
+            runFavoriteAction(openFavoritesDialog);
+        });
+
         const wrapper = document.createElement('div');
         Object.assign(wrapper.style, {
             display: 'flex',
             alignItems: 'center',
         });
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-        wrapper.append(titleLabel, button);
+        wrapper.append(titleLabel, button, favoritesButton);
+        runFavoriteAction(updateFavoritesButtonLabel);
         log('Button injected');
     }
 
