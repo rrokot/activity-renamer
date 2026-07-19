@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  Automatically renames Strava activities based on the places the route passes through (adaptive boundary bisection + coverage-weighted naming, geocoding via OpenStreetMap Nominatim)
+// @version      3.4
+// @description  Automatically names Strava activities as a travel narrative of map-prominent places the route passes ("Cottbus - Sielow - Werben - Burg - Dissen - Sielow - Cottbus"), geocoding via OpenStreetMap Nominatim
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
 // ==/UserScript==
@@ -14,9 +14,14 @@
     const CONFIG = {
         seedKm:          5,   // Initial sample spacing; places traversed at least this long are always detected
         maxSeeds:       20,   // Cap on initial seed points (spacing grows on very long rides)
-        minSegmentKm:    1,   // Stop bisecting a place boundary once localized within this distance
+        minSegmentKm:    2,   // Boundary precision floor; actual precision = max(this, total / 25)
         maxApiCalls:    50,   // Hard cap on Nominatim requests per run (cache hits are free)
-        maxPlacesInName: 5,   // Maximum number of unique places in the final name
+        maxPlacesInName: 7,   // Maximum number of UNIQUE places in the name (re-visits are free)
+        maxCorners:      6,   // Max geometric turn points forced into sampling and naming
+        minCornerKm:   0.5,   // A turn counts as a corner when the route deviates at least this far
+        relabelKm:     1.5,   // A dropped stretch within this distance of a kept place reads as that place
+        enterKm:       0.6,   // A village counts as visited only if the route comes this close to its centre
+        stripParentheticals: true, // "Burg (Spreewald)" -> "Burg"
         coordPrecision:  3,   // Decimal places for caching coordinates (~110m resolution)
         rateLimit:    1050,   // Min ms between Nominatim API calls (policy: max 1 req/sec)
         nominatimZoom:  14,   // Reverse-geocoding detail: 14 = neighbourhood; coarser levels come along in the address
@@ -36,18 +41,21 @@
         noId:        'Could not detect activity ID from URL.',
     };
 
-    // Nominatim address fields grouped by granularity, most specific first within each tier.
-    // The naming tier is chosen after geocoding: settlements if the route crosses several,
-    // districts if the whole route stays inside one settlement.
+    // What appears as a labelled place on a map: villages, towns, cities.
+    // Hamlets and lone farmsteads are below the label threshold; urban
+    // districts collapse into their city; municipalities are administrative
+    // containers used only as a last resort.
+    const MAJOR_PLACES  = ['village', 'town', 'city'];
+    const MINOR_PLACES  = ['hamlet', 'isolated_dwelling', 'croft', 'farm'];
+    const PARENT_PLACES = ['city', 'municipality'];
     const TIERS = {
-        district:   ['quarter', 'neighbourhood', 'suburb', 'city_district', 'borough'],
-        settlement: ['hamlet', 'village', 'town', 'city', 'municipality'],
-        region:     ['county', 'state'],
+        district: ['quarter', 'neighbourhood', 'suburb', 'city_district', 'borough'],
+        region:   ['county', 'state'],
     };
 
     // Nominatim endpoint and localStorage prefixes
     const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse';
-    const CACHE_PREFIX  = 'strava_geocode_v2_'; // v2: caches the full address object as JSON
+    const CACHE_PREFIX  = 'strava_geocode_v5_'; // v5: caches {addresstype, name, importance, feature lat/lon, address}
     const LEGACY_CACHE_PREFIX = 'strava_geocode_';
 
     const BUTTON_ID = 'strava-route-rename-btn';
@@ -61,7 +69,7 @@
         return `${CACHE_PREFIX}${parseFloat(lat).toFixed(r)}_${parseFloat(lon).toFixed(r)}`;
     }
 
-    // v1 cached bare name strings; those entries are useless for the v2 algorithm
+    // Older versions cached less data per point; those entries are unusable now
     function cleanupLegacyCache() {
         const stale = [];
         for (let i = 0; i < localStorage.length; i++) {
@@ -126,36 +134,109 @@
         return best;
     }
 
+    // Corner points where the route significantly changes direction — the spots
+    // the rider deliberately steered towards. Douglas-Peucker ranking: each
+    // corner is scored by how far it deviates from the straight line between
+    // its anchors; the strongest corners win. Returned sorted by importance.
+    function findCorners(track) {
+        const n = track.lats.length;
+        if (n < 3) return [];
+        // Local equirectangular projection to km
+        const kx = 111.32 * Math.cos(track.lats[0] * Math.PI / 180), ky = 110.57;
+        const xs = track.lons.map(l => l * kx), ys = track.lats.map(l => l * ky);
+        const tolerance = Math.max(CONFIG.minCornerKm, track.total * 0.015);
+
+        const corners = [];
+        const stack = [];
+        if (track.isLoop && track.farthestIdx > 0 && track.farthestIdx < n - 1) {
+            // Closed loop: a start-end baseline is degenerate, anchor at the farthest point
+            corners.push({ idx: track.farthestIdx, dev: Infinity });
+            stack.push([0, track.farthestIdx], [track.farthestIdx, n - 1]);
+        } else {
+            stack.push([0, n - 1]);
+        }
+        while (stack.length) {
+            const [a, b] = stack.pop();
+            if (b - a < 2) continue;
+            const ax = xs[a], ay = ys[a], dx = xs[b] - ax, dy = ys[b] - ay;
+            const len2 = dx * dx + dy * dy;
+            let best = -1, bestD = 0;
+            for (let i = a + 1; i < b; i++) {
+                let d;
+                if (len2 === 0) {
+                    d = Math.hypot(xs[i] - ax, ys[i] - ay);
+                } else {
+                    const t = Math.max(0, Math.min(1, ((xs[i] - ax) * dx + (ys[i] - ay) * dy) / len2));
+                    d = Math.hypot(xs[i] - (ax + t * dx), ys[i] - (ay + t * dy));
+                }
+                if (d > bestD) { bestD = d; best = i; }
+            }
+            if (best >= 0 && bestD >= tolerance) {
+                corners.push({ idx: best, dev: bestD });
+                stack.push([a, best], [best, b]);
+            }
+        }
+        corners.sort((p, q) => q.dev - p.dev);
+        return corners.slice(0, CONFIG.maxCorners).map(c => c.idx);
+    }
+
     // --- PLACE NAMES ---
 
-    // Name of the place at exactly this tier (no fallback — callers decide how to degrade)
-    function nameAt(address, tier) {
-        if (!address) return null;
+    // Bilingual regions (e.g. Lusatia) combine two language variants in one
+    // OSM name ("Dissen - Dešno"); keep the first variant. Optionally strip
+    // trailing disambiguation ("Burg (Spreewald)" -> "Burg"). Hyphenated
+    // compounds without surrounding spaces (Baden-Baden) are left alone.
+    function cleanPlaceName(name) {
+        let n = name.split(/\s+[-–—]\s+|\s*\/\s*/)[0];
+        if (CONFIG.stripParentheticals) n = n.replace(/\s*\([^)]*\)\s*$/, '');
+        return n.trim() || name;
+    }
+
+    // The place as the map would label it: a village/town under its own name;
+    // urban districts collapse to their city; hamlets and farms are marked
+    // minor (below the label threshold). On loop rides the start/finish reads
+    // as the home city ("Cottbus"), not the home suburb ("Klein Ströbitz").
+    // Returns { name, imp, minor? } or null.
+    function waypointOf(geo, edge) {
+        if (!geo) return null;
+        const a = geo.a || {};
+        const base = { imp: geo.i || 0, cy: geo.y, cx: geo.x };
+        if (edge && a.city) return { ...base, name: cleanPlaceName(a.city) };
+        if (MAJOR_PLACES.includes(geo.t) && geo.n) {
+            // cc: village/town claims are verified against their centre later
+            // ("crossed its land" is not "went there"); a city you are inside
+            // of needs no such check
+            return { ...base, name: cleanPlaceName(geo.n), cc: geo.t !== 'city' };
+        }
+        if (a.village) return { ...base, name: cleanPlaceName(a.village), cc: true };
+        if (a.town) return { ...base, name: cleanPlaceName(a.town), cc: true };
+        if (MINOR_PLACES.includes(geo.t) && geo.n) return { ...base, name: cleanPlaceName(geo.n), minor: true };
+        if (a.hamlet) return { ...base, name: cleanPlaceName(a.hamlet), minor: true };
+        for (const f of PARENT_PLACES) if (a[f]) return { ...base, name: cleanPlaceName(a[f]) };
+        return null;
+    }
+
+    // Name of the place at exactly this fallback tier
+    function nameAt(geo, tier) {
+        if (!geo || !geo.a) return null;
         for (const field of TIERS[tier]) {
-            if (address[field]) return address[field];
+            if (geo.a[field]) return cleanPlaceName(geo.a[field]);
         }
         return null;
     }
 
-    // Identity used to decide whether two samples are "in the same place" during
-    // refinement. Falls back to coarser tiers so stretches with no data at the
-    // requested tier (forest, water) don't trigger endless bisection.
-    const KEY_FALLBACK = {
-        district:   ['district', 'settlement', 'region'],
-        settlement: ['settlement', 'region'],
+    // Identity used to decide whether two samples are "in the same place"
+    // during refinement; falls through to coarser data so stretches with no
+    // name (forest, water) don't trigger endless bisection
+    const KEYERS = {
+        settlement: geo => waypointOf(geo)?.name ?? nameAt(geo, 'district') ?? nameAt(geo, 'region'),
+        district:   geo => nameAt(geo, 'district') ?? waypointOf(geo)?.name ?? nameAt(geo, 'region'),
     };
-    function placeKey(address, tier) {
-        for (const t of KEY_FALLBACK[tier]) {
-            const name = nameAt(address, t);
-            if (name) return `${t}:${name}`;
-        }
-        return null;
-    }
 
     // --- GEOCODING ---
 
-    // Rate-limited, budgeted Nominatim client caching the full address object,
-    // so granularity decisions can be revisited without extra requests.
+    // Rate-limited, budgeted Nominatim client caching the useful parts of the
+    // response, so naming decisions can be revisited without extra requests.
     function createGeocoder(onProgress) {
         let lastCallAt = 0;
         let apiCalls = 0;
@@ -185,13 +266,20 @@
                 });
                 try {
                     const res = await fetch(`${NOMINATIM_URL}?${params}`, {
-                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.0' }
+                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.4' }
                     });
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const data = await res.json();
-                    const address = data.address ?? null;
-                    try { localStorage.setItem(key, JSON.stringify(address)); } catch (e) { /* cache full */ }
-                    return address;
+                    const geo = {
+                        t: data.addresstype ?? null,   // type of the feature found (village, suburb, ...)
+                        n: data.name || null,          // its own name
+                        i: data.importance ?? null,    // map prominence (0..1)
+                        y: data.lat ? parseFloat(data.lat) : null, // feature centre
+                        x: data.lon ? parseFloat(data.lon) : null,
+                        a: data.address ?? null,       // full address hierarchy
+                    };
+                    try { localStorage.setItem(key, JSON.stringify(geo)); } catch (e) { /* cache full */ }
+                    return geo;
                 } catch (e) {
                     console.error('[Strava Renamer] Geocoding error:', e);
                     return null; // Not cached — will be retried on the next run
@@ -204,11 +292,11 @@
 
     // --- SAMPLING ---
 
-    // Initial sample positions: every seedKm along the track, plus start, end
-    // and the farthest point (the likely destination), deduplicated and sorted
-    function seedIndices(track) {
+    // Initial sample positions: every seedKm along the track, plus start, end,
+    // the farthest point and every corner, deduplicated and sorted
+    function seedIndices(track, cornerIdxs) {
         const step = Math.max(CONFIG.seedKm, track.total / (CONFIG.maxSeeds - 1));
-        const indices = new Set([0, track.dists.length - 1, track.farthestIdx]);
+        const indices = new Set([0, track.dists.length - 1, track.farthestIdx, ...cornerIdxs]);
         for (let target = step; target < track.total; target += step) {
             indices.add(indexAtDistance(track.dists, target));
         }
@@ -216,15 +304,22 @@
     }
 
     // Recursively bisect segments whose endpoints resolve to different places,
-    // until each boundary is localized within minSegmentKm. Homogeneous
-    // stretches cost no requests; boundaries get all the detail.
+    // until each boundary is localized. Homogeneous stretches cost no
+    // requests; boundaries get all the detail.
     async function refineSamples(samples, tier, track, geocoder) {
+        const keyOf = KEYERS[tier];
+        // Boundary precision scales with ride length: exact boundaries don't
+        // matter for naming, only which places exist and roughly how much of
+        // the ride they cover — this keeps long rides within the API budget
+        const boundaryKm = Math.max(CONFIG.minSegmentKm, track.total / 25);
         let i = 0;
         while (i < samples.length - 1) {
             const a = samples[i], b = samples[i + 1];
+            // A failed geocode (geo null) is unknown, not a place change
+            if (!a.geo || !b.geo) { i++; continue; }
             const gapKm = track.dists[b.idx] - track.dists[a.idx];
-            if (placeKey(a.address, tier) === placeKey(b.address, tier)
-                || gapKm < CONFIG.minSegmentKm || b.idx - a.idx < 2) { i++; continue; }
+            if (keyOf(a.geo) === keyOf(b.geo)
+                || gapKm < boundaryKm || b.idx - a.idx < 2) { i++; continue; }
 
             const midIdx = indexAtDistance(track.dists, (track.dists[a.idx] + track.dists[b.idx]) / 2);
             if (midIdx <= a.idx || midIdx >= b.idx) { i++; continue; }
@@ -232,53 +327,140 @@
             const lat = track.lats[midIdx], lon = track.lons[midIdx];
             if (!geocoder.isCached(lat, lon) && !geocoder.hasBudget()) { i++; continue; }
 
-            samples.splice(i + 1, 0, { idx: midIdx, address: await geocoder.reverse(lat, lon) });
+            samples.splice(i + 1, 0, { idx: midIdx, geo: await geocoder.reverse(lat, lon) });
             // No i++ — re-examine the left half of the split segment next iteration
         }
     }
 
     // --- NAMING ---
 
-    // Build the activity name at a given tier; null when nothing resolves at this tier
-    function buildName(samples, tier, track) {
+    // Assemble a travel narrative from per-sample places produced by
+    // nameFor(geo, edge) -> { name, imp, minor? } | null: places in the order
+    // passed, consecutive repeats merged, later re-visits kept ("A - B - C -
+    // B - A"). At most maxPlacesInName UNIQUE places appear, chosen by route
+    // anchors first, then map prominence. Returns { text, count } or null.
+    function buildRouteName(samples, track, cornerIdxs, nameFor) {
         const d = i => track.dists[samples[i].idx];
 
         // Each sample "covers" the stretch of track closer to it than to its
-        // neighbours; that coverage weights the place it resolves to. Samples
-        // without a name at this tier (e.g. only county/state) are dropped.
-        const entries = samples.map((s, i) => ({
-            name: nameAt(s.address, tier),
-            km: (i === samples.length - 1 ? track.total : (d(i) + d(i + 1)) / 2)
-              - (i === 0 ? 0 : (d(i - 1) + d(i)) / 2),
-        })).filter(e => e.name);
+        // neighbours; that coverage weights the place it resolves to
+        const entries = samples.map((s, i) => {
+            const edge = track.isLoop && (i === 0 || i === samples.length - 1);
+            const wp = nameFor(s.geo, edge);
+            return wp && {
+                name: wp.name, imp: wp.imp || 0, minor: !!wp.minor, idx: s.idx,
+                cc: !!wp.cc, cy: wp.cy, cx: wp.cx,
+                km: (i === samples.length - 1 ? track.total : (d(i) + d(i + 1)) / 2)
+                  - (i === 0 ? 0 : (d(i - 1) + d(i)) / 2),
+            };
+        }).filter(Boolean);
         if (entries.length === 0) return null;
 
-        // Merge repeat visits: first occurrence fixes the position, coverage
-        // accumulates. Collapses out-and-back (A-B-C-B-A) and loop (A-B-C-A)
-        // repeats while preserving travel order.
-        const byName = new Map();
+        // Travel narrative: merge consecutive repeats only
+        const runs = [];
         for (const e of entries) {
-            if (byName.has(e.name)) byName.get(e.name).km += e.km;
-            else byName.set(e.name, { name: e.name, km: e.km });
-        }
-        const places = [...byName.values()];
-        if (places.length <= CONFIG.maxPlacesInName) {
-            return places.map(p => p.name).join(' - ');
+            const last = runs[runs.length - 1];
+            if (last && last.name === e.name) { last.km += e.km; last.idxs.push(e.idx); }
+            else runs.push({ name: e.name, km: e.km, idxs: [e.idx] });
         }
 
-        // Too many places: always keep the start, the last new place (the
-        // turnaround on out-and-back routes) and the place at the farthest
-        // point; fill the rest with the largest coverage, restore travel order
-        const keep = new Set([places[0].name, places[places.length - 1].name]);
-        const farSample = samples.reduce((best, s) =>
-            Math.abs(s.idx - track.farthestIdx) < Math.abs(best.idx - track.farthestIdx) ? s : best);
-        const farName = nameAt(farSample.address, tier);
-        if (farName) keep.add(farName);
-        for (const p of [...places].sort((x, y) => y.km - x.km)) {
-            if (keep.size >= CONFIG.maxPlacesInName) break;
-            keep.add(p.name);
+        // Stats per unique place
+        const byName = new Map();
+        for (const e of entries) {
+            const centre = e.cc && e.cy != null ? [`${e.cy},${e.cx}`] : [];
+            const p = byName.get(e.name);
+            if (p) {
+                p.km += e.km; p.imp = Math.max(p.imp, e.imp);
+                p.minor = p.minor && e.minor; p.cc = p.cc && e.cc;
+                centre.forEach(c => p.centres.add(c));
+            } else {
+                byName.set(e.name, { name: e.name, km: e.km, imp: e.imp,
+                    minor: e.minor, cc: e.cc, centres: new Set(centre) });
+            }
         }
-        return places.filter(p => keep.has(p.name)).map(p => p.name).join(' - ');
+        // A village crossed only administratively — the route never comes
+        // near its centre — wasn't really visited: demote it below the label
+        // threshold (it can still read as a nearby kept place, like hamlets)
+        const stride = Math.max(1, Math.floor(track.lats.length / 500));
+        const centreDist = c => {
+            const [cy, cx] = c.split(',').map(Number);
+            let m = Infinity;
+            for (let i = 0; i < track.lats.length; i += stride) {
+                m = Math.min(m, getDistance(track.lats[i], track.lons[i], cy, cx));
+            }
+            return m;
+        };
+        for (const p of byName.values()) {
+            if (p.minor || !p.cc || p.centres.size === 0) continue;
+            if (Math.min(...[...p.centres].map(centreDist)) > CONFIG.enterKm) p.minor = true;
+        }
+        // Minor places (hamlets, farms, not-really-visited villages) only
+        // qualify when there is nothing bigger on the whole route
+        let candidates = [...byName.values()].filter(p => !p.minor);
+        if (candidates.length < 2) candidates = [...byName.values()];
+        const candidateNames = new Set(candidates.map(p => p.name));
+
+        const keep = new Set();
+        const addIf = (name, force) => {
+            if (name && keep.size < CONFIG.maxPlacesInName && byName.has(name)
+                && (force || candidateNames.has(name))) keep.add(name);
+        };
+        const nameNear = idx => {
+            const s = samples.reduce((best, c) =>
+                Math.abs(c.idx - idx) < Math.abs(best.idx - idx) ? c : best);
+            return nameFor(s.geo, false)?.name;
+        };
+        // Start and finish anchor the narrative; the farthest point and the
+        // two sharpest corners define the route's shape; remaining slots go
+        // by coverage — how much of the ride each place accounts for (an
+        // out-and-back corridor counts both legs). Nominatim importance is
+        // only a tiebreak: it is too noisy among equally-sized villages.
+        addIf(runs[0].name, true);
+        addIf(runs[runs.length - 1].name, true);
+        addIf(nameNear(track.farthestIdx), false);
+        let cornerSlots = 2;
+        for (const cornerIdx of cornerIdxs) {
+            if (cornerSlots <= 0) break;
+            const n = nameNear(cornerIdx);
+            if (n && !keep.has(n)) { addIf(n, false); if (keep.has(n)) cornerSlots--; }
+        }
+        for (const p of [...candidates].sort((x, y) => (y.km - x.km) || (y.imp - x.imp))) {
+            addIf(p.name, false);
+        }
+
+        // A dropped stretch that hugs a kept place still reads as that place
+        // on the map (its label covers the surroundings) — e.g. a return leg
+        // sampled just across a village boundary. Reassign such runs to the
+        // nearby kept place instead of silently skipping them.
+        const posOf = new Map();
+        for (const e of entries) {
+            if (!posOf.has(e.name)) posOf.set(e.name, []);
+            posOf.get(e.name).push(e.idx);
+        }
+        const nearestKept = run => {
+            let best = null, bestD = CONFIG.relabelKm;
+            for (const name of keep) {
+                for (const pi of posOf.get(name) ?? []) {
+                    for (const ri of run.idxs) {
+                        const dd = getDistance(track.lats[ri], track.lons[ri],
+                                               track.lats[pi], track.lons[pi]);
+                        if (dd <= bestD) { bestD = dd; best = name; }
+                    }
+                }
+            }
+            return best;
+        };
+
+        // Walk the narrative; re-merge what touches
+        const seq = [];
+        for (const r of runs) {
+            const label = keep.has(r.name) ? r.name : nearestKept(r);
+            if (!label) continue;
+            if (seq[seq.length - 1] !== label) seq.push(label);
+        }
+        console.log('[Strava Renamer] Runs: ' + runs.map(r =>
+            `${keep.has(r.name) ? '' : '~'}${r.name}:${r.km.toFixed(1)}`).join(' | '));
+        return { text: seq.join(' - '), count: keep.size };
     }
 
     // --- DOM HELPERS ---
@@ -294,15 +476,20 @@
     /**
      * How the algorithm works:
      * 1. Download the GPX track, parse points, compute cumulative distances
-     * 2. Seed sample points every seedKm (plus start, end and farthest point)
-     * 3. Reverse-geocode seeds via Nominatim (full address cached), then
-     *    recursively bisect segments whose endpoints lie in different
-     *    settlements until each boundary is localized within minSegmentKm
-     * 4. If the whole route stays inside one settlement, refine again at
-     *    district level — same samples, finer naming
-     * 5. Name = places in travel order, repeat visits merged (handles loops
-     *    and out-and-back), weighted by kilometres covered; start, turnaround
-     *    and farthest point always kept; too-coarse results filtered out
+     * 2. Find geometric corner points (Douglas-Peucker) — where the rider
+     *    deliberately turned
+     * 3. Seed sample points every seedKm plus start, end, farthest point and
+     *    corners; reverse-geocode via Nominatim (response cached), then
+     *    recursively bisect segments whose endpoints lie in different places
+     * 4. Each sample becomes the place a map would label there: village/town
+     *    under its own name, urban districts collapsed to their city,
+     *    hamlets/farms marked as below the label threshold
+     * 5. Name = travel narrative: places in the order passed, consecutive
+     *    repeats merged, re-visits kept ("Cottbus - Sielow - Werben - Burg -
+     *    Dissen - Sielow - Cottbus"). At most maxPlacesInName unique places:
+     *    start/finish first (on loops promoted to the home city), then the
+     *    farthest point and corner places, then map prominence. Falls back to
+     *    district naming within one city, then to county/state
      * 6. Fill in the name field and focus it
      */
     async function generateAndFillName(btn) {
@@ -336,40 +523,46 @@
                 lats, lons, dists,
                 total: dists[dists.length - 1],
                 farthestIdx: farthestPointIndex(lats, lons),
+                isLoop: getDistance(lats[0], lons[0], lats[lats.length - 1], lons[lats.length - 1]) < 1,
             };
-            console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${trkpts.length} trackpoints`);
 
-            // Steps 2-3: Seed samples and refine place boundaries
-            setButtonState(btn, STRINGS.geocoding, 'is-loading');
+            // Step 2: Corner detection
+            const corners = findCorners(track);
+            console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${trkpts.length} trackpoints, ${corners.length} corners`);
+
+            // Step 3: Seed samples and refine place boundaries
+            setButtonState(btn, `${STRINGS.geocoding}...`, 'is-loading');
             const geocoder = createGeocoder(n =>
                 setButtonState(btn, `${STRINGS.geocoding} ${n}/${CONFIG.maxApiCalls}...`, 'is-loading'));
 
             const samples = [];
-            for (const idx of seedIndices(track)) {
+            for (const idx of seedIndices(track, corners)) {
                 if (!geocoder.isCached(lats[idx], lons[idx]) && !geocoder.hasBudget()) continue;
-                samples.push({ idx, address: await geocoder.reverse(lats[idx], lons[idx]) });
+                samples.push({ idx, geo: await geocoder.reverse(lats[idx], lons[idx]) });
             }
             await refineSamples(samples, 'settlement', track, geocoder);
 
-            // Step 4: Pick the naming tier from the whole picture
-            const settlements = new Set(
-                samples.map(s => placeKey(s.address, 'settlement')).filter(Boolean));
-            let tier = 'settlement';
-            if (settlements.size <= 1) {
-                tier = 'district';
-                await refineSamples(samples, 'district', track, geocoder);
-            }
-            console.log(`[Strava Renamer] ${samples.length} samples, ${geocoder.apiCalls} API calls, tier: ${tier}`);
+            // District-level detail is only needed when the whole ride
+            // resolves to a single city
+            const wpCount = new Set(
+                samples.map(s => waypointOf(s.geo)?.name).filter(Boolean)).size;
+            if (wpCount <= 1) await refineSamples(samples, 'district', track, geocoder);
+            console.log(`[Strava Renamer] ${samples.length} samples, ${geocoder.apiCalls} API calls`
+                + (geocoder.hasBudget() ? '' : ' (budget exhausted, boundaries localized coarsely)'));
 
-            // Step 5: Build the name, degrading to coarser tiers if needed
-            const tierChain = tier === 'district'
-                ? ['district', 'settlement', 'region']
-                : ['settlement', 'region'];
-            let newName = null;
-            for (const t of tierChain) {
-                newName = buildName(samples, t, track);
-                if (newName) break;
+            // Steps 4-5: Build the name: waypoint narrative, then fallbacks
+            const asTier = tier => geo => {
+                const n = nameAt(geo, tier);
+                return n ? { name: n, imp: 0 } : null;
+            };
+            const wp = buildRouteName(samples, track, corners, waypointOf);
+            let newName = (wp && wp.count >= 2) ? wp.text : null;
+            if (!newName) {
+                const districts = buildRouteName(samples, track, corners, asTier('district'));
+                if (districts && districts.count >= 2) newName = districts.text;
             }
+            if (!newName && wp) newName = wp.text; // Ride within one city with no district data
+            if (!newName) newName = buildRouteName(samples, track, corners, asTier('region'))?.text;
             newName = newName || 'Route Activity';
             console.log(`[Strava Renamer] Name: ${newName}`);
 
@@ -397,7 +590,7 @@
         if (document.querySelector(`#${BUTTON_ID}`)) return;
 
         const isEditPage = window.location.pathname.includes('/edit');
-        if (!isEditPage) return; // Only show button only on edit page
+        if (!isEditPage) return; // Only show button on edit page
 
         // Place button after the Title label
         const titleLabel = document.querySelector('label[for="activity_name"]');
