@@ -1,295 +1,562 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
-// @namespace    http://tampermonkey.net/
-// @version      3.7
-// @description  Automatically names Strava activities as a travel narrative of map-prominent places the route passes ("Cottbus - Sielow - Werben - Burg - Dissen - Sielow - Cottbus"), geocoding via OpenStreetMap Nominatim
+// @namespace    https://tampermonkey.net/
+// @version      4.3.0
+// @description  Names Strava activities from the OSM residential areas actually crossed by the route
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
+// @grant        none
+// @run-at       document-idle
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // --- CONFIGURATION ---
     const CONFIG = {
-        seedKm:          5,   // Initial sample spacing; places traversed at least this long are always detected
-        maxSeeds:       20,   // Cap on initial seed points (spacing grows on very long rides)
-        minSegmentKm:    2,   // Boundary precision floor; actual precision = max(this, total / 25)
-        maxApiCalls:    50,   // Hard cap on Nominatim requests per run (cache hits are free)
-        maxPlacesInName: 7,   // Maximum number of UNIQUE places in the name (re-visits are free)
-        maxCorners:      6,   // Max geometric turn points forced into sampling and naming
-        minCornerKm:   0.5,   // A turn counts as a corner when the route deviates at least this far
-        relabelKm:     1.5,   // A dropped stretch within this distance of a kept place reads as that place
-        enterKm:      0.6,   // "Rode through" vs "passed by" a village: max distance track-to-centre.
-                              // Calibrated on real rides: entered places measure 0.02-0.42 km,
-                              // skirted ones 0.47+ (Guhrow, Briesen outbound, Schmogrow)
-        haloKm:       0.65,   // A VISITED place also labels nearby stretches (parallel roads along
-                              // its edge); unvisited places never label anything
-        stripParentheticals: true, // "Burg (Spreewald)" -> "Burg"
-        coordPrecision:  3,   // Decimal places for caching coordinates (~110m resolution)
-        rateLimit:    1050,   // Min ms between Nominatim API calls (policy: max 1 req/sec)
-        nominatimZoom:  14,   // Reverse-geocoding detail: 14 = neighbourhood; coarser levels come along in the address
-        successDelay: 1500,   // How long to show the success state before reverting (ms)
-        errorDelay:   2000,   // How long to show the error state before reverting (ms)
+        residentialBufferM: 30,
+        residentialCacheDays: 30,
+        overpassMaxPoints: 180,
+        overpassTimeout: 45000,
+        maxNamePlaces: 7,
+        stripParentheticals: true,
+        coordPrecision: 4,
+        rateLimit: 1050,
+        nominatimPlaceZoom: 14,
+        nominatimAddressZoom: 18,
+        successDelay: 1500,
+        errorDelay: 2000,
     };
 
-    // UI text for all button states
     const STRINGS = {
-        idle:        'Generate from Geo',
+        idle: 'Generate from Geo',
         downloading: '⌛ Downloading...',
-        analyzing:   '⌛ Analyzing...',
-        geocoding:   '⌛ Geocoding',
-        done:        '✔️ Done!',
-        error:       '❌ Error',
-        noGps:       'No GPS data found (manual entry or indoor activity?)',
-        noId:        'Could not detect activity ID from URL.',
+        analyzing: '⌛ Analyzing...',
+        landuse: '⌛ Loading residential areas...',
+        geocoding: '⌛ Geocoding',
+        done: '✔️ Done!',
+        error: '❌ Error',
+        noGps: 'No GPS data found (manual entry or indoor activity?)',
+        noId: 'Could not detect activity ID from URL.',
     };
 
-    // What appears as a labelled place on a map: villages, towns, cities.
-    // Hamlets and lone farmsteads are below the label threshold; urban
-    // districts collapse into their city; municipalities are administrative
-    // containers used only as a last resort.
-    const MAJOR_PLACES  = ['village', 'town', 'city'];
-    const MINOR_PLACES  = ['hamlet', 'isolated_dwelling', 'croft', 'farm'];
-    const PARENT_PLACES = ['city', 'municipality'];
-    const TIERS = {
-        district: ['quarter', 'neighbourhood', 'suburb', 'city_district', 'borough'],
-        region:   ['county', 'state'],
-    };
-
-    // Nominatim endpoint and localStorage prefixes
     const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse';
-    const CACHE_PREFIX  = 'strava_geocode_v5_'; // v5: caches {addresstype, name, importance, feature lat/lon, address}
-    const LEGACY_CACHE_PREFIX = 'strava_geocode_';
-
+    const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+    const GEOCODE_CACHE_PREFIX = 'strava_geocode_v9_';
+    const RESIDENTIAL_CACHE_PREFIX = 'strava_residential_v1_';
     const BUTTON_ID = 'strava-route-rename-btn';
+    const BUTTON_COLORS = {
+        idle: '#fc4c02',
+        hover: '#e34402',
+        loading: '#888',
+        success: '#4caf50',
+        error: '#f44336',
+    };
 
-    // --- HELPERS ---
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-    function cacheKey(lat, lon) {
-        const r = CONFIG.coordPrecision;
-        return `${CACHE_PREFIX}${parseFloat(lat).toFixed(r)}_${parseFloat(lon).toFixed(r)}`;
+    function geocodeCacheKey(lat, lon, zoom) {
+        const precision = CONFIG.coordPrecision;
+        return `${GEOCODE_CACHE_PREFIX}z${zoom}_${Number(lat).toFixed(precision)}_${Number(lon).toFixed(precision)}`;
     }
 
-    // Older versions cached less data per point; those entries are unusable now
-    function cleanupLegacyCache() {
-        const stale = [];
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith(LEGACY_CACHE_PREFIX) && !k.startsWith(CACHE_PREFIX)) stale.push(k);
-        }
-        stale.forEach(k => localStorage.removeItem(k));
-    }
-
-    // Set button text and state
-    function setButtonState(btn, text, state = null) {
-        btn.innerText = text;
-        // Reset to default orange first
-        btn.style.backgroundColor = '#fc4c02';
+    function setButtonState(btn, text, state = 'idle') {
+        btn.textContent = text;
+        btn.dataset.state = state;
+        btn.style.backgroundColor = BUTTON_COLORS[state] || BUTTON_COLORS.idle;
         btn.style.color = 'white';
-        switch(state) {
-            case 'is-loading':
-                btn.style.backgroundColor = '#888';
-                btn.style.color = '#fff';
-                break;
-            case 'is-success':
-                btn.style.backgroundColor = '#4caf50';
-                btn.style.color = '#fff';
-                break;
-            case 'is-error':
-                btn.style.backgroundColor = '#f44336';
-                btn.style.color = '#fff';
-                break;
-        }
     }
 
-    // --- GEOMETRY ---
-
-    // Calculate distance between two points using haversine formula (in km)
     function getDistance(lat1, lon1, lat2, lon2) {
-        const R = 6371; // Earth radius in km
+        const earthRadiusKm = 6371;
         const dLat = (lat2 - lat1) * Math.PI / 180;
         const dLon = (lon2 - lon1) * Math.PI / 180;
         const a =
             Math.sin(dLat / 2) ** 2 +
             Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    // Track index whose cumulative distance is closest to target (binary search)
     function indexAtDistance(dists, target) {
-        let lo = 0, hi = dists.length - 1;
+        let lo = 0;
+        let hi = dists.length - 1;
         while (lo < hi) {
             const mid = (lo + hi) >> 1;
-            if (dists[mid] < target) lo = mid + 1; else hi = mid;
+            if (dists[mid] < target) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
         }
         return (lo > 0 && Math.abs(dists[lo - 1] - target) < Math.abs(dists[lo] - target)) ? lo - 1 : lo;
     }
 
-    // Point farthest from the start — the "destination" of an out-and-back route
-    function farthestPointIndex(lats, lons) {
-        let best = 0, bestD = -1;
-        for (let i = 0; i < lats.length; i++) {
-            const d = getDistance(lats[0], lons[0], lats[i], lons[i]);
-            if (d > bestD) { bestD = d; best = i; }
+    // Douglas-Peucker simplification keeps the Overpass linestring compact.
+    // The query radius includes the simplification tolerance, so no residential
+    // polygon near the original GPX line is lost when bends are removed.
+    function simplifyTrackForOverpass(track) {
+        const n = track.lats.length;
+        if (n <= 2) {
+            return {
+                points: Array.from({ length: n }, (_, i) => ({ lat: track.lats[i], lon: track.lons[i] })),
+                toleranceKm: 0,
+            };
+        }
+
+        const refLat = track.lats.reduce((sum, lat) => sum + lat, 0) / n;
+        const kx = 111.32 * Math.cos(refLat * Math.PI / 180);
+        const ky = 110.57;
+        const xs = track.lons.map(lon => lon * kx);
+        const ys = track.lats.map(lat => lat * ky);
+
+        const indicesAt = toleranceKm => {
+            const keep = new Uint8Array(n);
+            keep[0] = 1;
+            keep[n - 1] = 1;
+            const stack = [[0, n - 1]];
+            while (stack.length) {
+                const [a, b] = stack.pop();
+                if (b - a < 2) continue;
+                const ax = xs[a];
+                const ay = ys[a];
+                const dx = xs[b] - ax;
+                const dy = ys[b] - ay;
+                const len2 = dx * dx + dy * dy;
+                let best = -1;
+                let bestDistance = -1;
+                for (let i = a + 1; i < b; i++) {
+                    let distance;
+                    if (len2 === 0) {
+                        distance = Math.hypot(xs[i] - ax, ys[i] - ay);
+                    } else {
+                        const t = Math.max(0, Math.min(1,
+                            ((xs[i] - ax) * dx + (ys[i] - ay) * dy) / len2));
+                        distance = Math.hypot(xs[i] - (ax + t * dx), ys[i] - (ay + t * dy));
+                    }
+                    if (distance > bestDistance) {
+                        bestDistance = distance;
+                        best = i;
+                    }
+                }
+                if (best >= 0 && bestDistance > toleranceKm) {
+                    keep[best] = 1;
+                    stack.push([a, best], [best, b]);
+                }
+            }
+            return Array.from(keep, (v, i) => v ? i : -1).filter(i => i >= 0);
+        };
+
+        let toleranceKm = 0.02;
+        let indices = indicesAt(toleranceKm);
+        while (indices.length > CONFIG.overpassMaxPoints) {
+            toleranceKm *= 1.5;
+            indices = indicesAt(toleranceKm);
+        }
+        return {
+            points: indices.map(i => ({ lat: track.lats[i], lon: track.lons[i] })),
+            toleranceKm,
+        };
+    }
+
+    const sameCoord = (a, b) =>
+        Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lon - b.lon) < 1e-7;
+
+    function normalizeRing(geometry) {
+        return (geometry || [])
+            .filter(p => Number.isFinite(p?.lat) && Number.isFinite(p?.lon))
+            .map(p => ({ lat: p.lat, lon: p.lon }));
+    }
+
+    // Multipolygon members may be split into several OSM ways. Join matching
+    // endpoints into closed rings before running point-in-polygon tests.
+    function stitchRings(geometries) {
+        const pending = geometries.map(normalizeRing).filter(geometry => geometry.length >= 2);
+        const rings = [];
+        while (pending.length) {
+            let ring = pending.pop();
+            let joined = true;
+            while (!sameCoord(ring[0], ring[ring.length - 1]) && joined) {
+                joined = false;
+                const head = ring[0];
+                const tail = ring[ring.length - 1];
+                for (let i = 0; i < pending.length; i++) {
+                    const segment = pending[i];
+                    const first = segment[0];
+                    const last = segment[segment.length - 1];
+                    if (sameCoord(tail, first)) {
+                        ring = ring.concat(segment.slice(1));
+                    } else if (sameCoord(tail, last)) {
+                        ring = ring.concat(segment.slice(0, -1).reverse());
+                    } else if (sameCoord(head, last)) {
+                        ring = segment.slice(0, -1).concat(ring);
+                    } else if (sameCoord(head, first)) {
+                        ring = segment.slice(1).reverse().concat(ring);
+                    } else {
+                        continue;
+                    }
+                    pending.splice(i, 1);
+                    joined = true;
+                    break;
+                }
+            }
+            if (ring.length >= 4 && sameCoord(ring[0], ring[ring.length - 1])) rings.push(ring);
+        }
+        return rings;
+    }
+
+    function residentialArea(outers, inners = []) {
+        if (!outers.length) return null;
+        const bbox = { south: Infinity, west: Infinity, north: -Infinity, east: -Infinity };
+        for (const ring of outers) {
+            for (const p of ring) {
+                bbox.south = Math.min(bbox.south, p.lat);
+                bbox.west = Math.min(bbox.west, p.lon);
+                bbox.north = Math.max(bbox.north, p.lat);
+                bbox.east = Math.max(bbox.east, p.lon);
+            }
+        }
+        return {
+            outers,
+            inners,
+            bbox,
+        };
+    }
+
+    function parseResidentialAreas(elements) {
+        const areas = [];
+        for (const element of elements || []) {
+            if (element.type === 'way') {
+                const ring = normalizeRing(element.geometry);
+                if (ring.length >= 4 && sameCoord(ring[0], ring[ring.length - 1])) {
+                    const area = residentialArea([ring]);
+                    if (area) areas.push(area);
+                }
+                continue;
+            }
+            if (element.type !== 'relation') continue;
+            const members = (element.members || []).filter(m => m.type === 'way' && m.geometry);
+            const outerSegments = members.filter(m => m.role !== 'inner').map(m => m.geometry);
+            const innerSegments = members.filter(m => m.role === 'inner').map(m => m.geometry);
+            const area = residentialArea(stitchRings(outerSegments), stitchRings(innerSegments));
+            if (area) areas.push(area);
+        }
+        return areas;
+    }
+
+    function pointInRing(lat, lon, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const yi = ring[i].lat;
+            const yj = ring[j].lat;
+            const xi = ring[i].lon;
+            const xj = ring[j].lon;
+            if ((yi > lat) !== (yj > lat)
+                && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    function pointSegmentDistanceKm(lat, lon, a, b) {
+        const kx = 111.32 * Math.cos(lat * Math.PI / 180);
+        const ky = 110.57;
+        const ax = (a.lon - lon) * kx;
+        const ay = (a.lat - lat) * ky;
+        const bx = (b.lon - lon) * kx;
+        const by = (b.lat - lat) * ky;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
+        return Math.hypot(ax + t * dx, ay + t * dy);
+    }
+
+    function ringDistanceKm(lat, lon, ring, limitKm) {
+        let best = Infinity;
+        for (let i = 1; i < ring.length; i++) {
+            best = Math.min(best, pointSegmentDistanceKm(lat, lon, ring[i - 1], ring[i]));
+            if (best <= limitKm) break;
         }
         return best;
     }
 
-    // Corner points where the route significantly changes direction — the spots
-    // the rider deliberately steered towards. Douglas-Peucker ranking: each
-    // corner is scored by how far it deviates from the straight line between
-    // its anchors; the strongest corners win. Returned sorted by importance.
-    function findCorners(track) {
-        const n = track.lats.length;
-        if (n < 3) return [];
-        // Local equirectangular projection to km
-        const kx = 111.32 * Math.cos(track.lats[0] * Math.PI / 180), ky = 110.57;
-        const xs = track.lons.map(l => l * kx), ys = track.lats.map(l => l * ky);
-        const tolerance = Math.max(CONFIG.minCornerKm, track.total * 0.015);
+    function pointTouchesResidential(lat, lon, areas) {
+        const bufferKm = CONFIG.residentialBufferM / 1000;
+        const dLat = bufferKm / 110.57;
+        const dLon = bufferKm / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
+        for (const area of areas) {
+            const b = area.bbox;
+            if (lat < b.south - dLat || lat > b.north + dLat
+                || lon < b.west - dLon || lon > b.east + dLon) continue;
 
-        const corners = [];
-        const stack = [];
-        if (track.isLoop && track.farthestIdx > 0 && track.farthestIdx < n - 1) {
-            // Closed loop: a start-end baseline is degenerate, anchor at the farthest point
-            corners.push({ idx: track.farthestIdx, dev: Infinity });
-            stack.push([0, track.farthestIdx], [track.farthestIdx, n - 1]);
-        } else {
-            stack.push([0, n - 1]);
-        }
-        while (stack.length) {
-            const [a, b] = stack.pop();
-            if (b - a < 2) continue;
-            const ax = xs[a], ay = ys[a], dx = xs[b] - ax, dy = ys[b] - ay;
-            const len2 = dx * dx + dy * dy;
-            let best = -1, bestD = 0;
-            for (let i = a + 1; i < b; i++) {
-                let d;
-                if (len2 === 0) {
-                    d = Math.hypot(xs[i] - ax, ys[i] - ay);
-                } else {
-                    const t = Math.max(0, Math.min(1, ((xs[i] - ax) * dx + (ys[i] - ay) * dy) / len2));
-                    d = Math.hypot(xs[i] - (ax + t * dx), ys[i] - (ay + t * dy));
-                }
-                if (d > bestD) { bestD = d; best = i; }
-            }
-            if (best >= 0 && bestD >= tolerance) {
-                corners.push({ idx: best, dev: bestD });
-                stack.push([a, best], [best, b]);
+            const inOuter = area.outers.some(ring => pointInRing(lat, lon, ring));
+            const inInner = area.inners.some(ring => pointInRing(lat, lon, ring));
+            if (inOuter && !inInner) return true;
+
+            for (const ring of [...area.outers, ...area.inners]) {
+                if (ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm) return true;
             }
         }
-        corners.sort((p, q) => q.dev - p.dev);
-        return corners.slice(0, CONFIG.maxCorners).map(c => c.idx);
+        return false;
     }
 
-    // --- PLACE NAMES ---
+    function crossedResidentialRanges(track, areas) {
+        const ranges = [];
+        let start = null;
+        for (let i = 0; i < track.lats.length; i++) {
+            const inside = pointTouchesResidential(track.lats[i], track.lons[i], areas);
+            if (inside && start === null) {
+                start = i;
+            }
+            if (!inside && start !== null) {
+                ranges.push({ start, end: i - 1 });
+                start = null;
+            }
+        }
+        if (start !== null) {
+            ranges.push({ start, end: track.lats.length - 1 });
+        }
 
-    // Bilingual regions (e.g. Lusatia) combine two language variants in one
-    // OSM name ("Dissen - Dešno"); keep the first variant. Optionally strip
-    // trailing disambiguation ("Burg (Spreewald)" -> "Burg"). Hyphenated
-    // compounds without surrounding spaces (Baden-Baden) are left alone.
+        return ranges.map(range => {
+            const fromKm = range.start === 0 ? 0
+                : (track.dists[range.start - 1] + track.dists[range.start]) / 2;
+            const toKm = range.end === track.lats.length - 1 ? track.total
+                : (track.dists[range.end] + track.dists[range.end + 1]) / 2;
+            return {
+                ...range,
+                fromKm,
+                toKm,
+                km: toKm - fromKm,
+                anchor: indexAtDistance(track.dists, (fromKm + toKm) / 2),
+            };
+        });
+    }
+
+    function residentialCacheKey(activityId) {
+        return `${RESIDENTIAL_CACHE_PREFIX}${activityId}`;
+    }
+
+    function trackSignature(track) {
+        const last = track.lats.length - 1;
+        return [
+            track.lats.length,
+            track.total.toFixed(3),
+            track.lats[0].toFixed(5),
+            track.lons[0].toFixed(5),
+            track.lats[last].toFixed(5),
+            track.lons[last].toFixed(5),
+            CONFIG.residentialBufferM,
+        ].join(':');
+    }
+
+    function cachedResidentialRanges(activityId, track) {
+        const key = residentialCacheKey(activityId);
+        const stored = localStorage.getItem(key);
+        if (!stored) return null;
+        try {
+            const value = JSON.parse(stored);
+            const maxAge = CONFIG.residentialCacheDays * 24 * 60 * 60 * 1000;
+            const hasInvalidRange = !Array.isArray(value.ranges) || value.ranges.some(range =>
+                !Number.isInteger(range.start)
+                || !Number.isInteger(range.end)
+                || !Number.isInteger(range.anchor)
+                || range.start < 0
+                || range.end < range.start
+                || range.anchor < range.start
+                || range.anchor > range.end
+                || range.end >= track.lats.length
+                || !Number.isFinite(range.fromKm)
+                || !Number.isFinite(range.toKm)
+                || !Number.isFinite(range.km));
+            if (value.signature !== trackSignature(track)
+                || !Number.isFinite(value.savedAt)
+                || Date.now() - value.savedAt > maxAge
+                || hasInvalidRange) {
+                return null;
+            }
+            return value.ranges;
+        } catch {
+            localStorage.removeItem(key);
+            return null;
+        }
+    }
+
+    function cacheResidentialRanges(activityId, track, ranges) {
+        try {
+            localStorage.setItem(residentialCacheKey(activityId), JSON.stringify({
+                signature: trackSignature(track),
+                savedAt: Date.now(),
+                ranges,
+            }));
+        } catch {
+            // localStorage can be unavailable or full; cache misses are harmless.
+        }
+    }
+
+    async function fetchResidentialAreas(track) {
+        const simplified = simplifyTrackForOverpass(track);
+        const radiusM = Math.ceil(CONFIG.residentialBufferM + simplified.toleranceKm * 1000 + 10);
+        const line = simplified.points
+            .map(p => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(',');
+        const query = `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeout / 1000)}];\n`
+            + `(way["landuse"="residential"](around:${radiusM},${line});`
+            + `relation["landuse"="residential"](around:${radiusM},${line}););\n`
+            + 'out body geom;';
+
+        let response;
+        try {
+            response = await fetch(OVERPASS_URL, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                },
+                body: `data=${encodeURIComponent(query)}`,
+            });
+        } catch (error) {
+            throw new Error(`Failed to load OSM residential areas: ${error?.message || 'network error'}`);
+        }
+        if (!response.ok) {
+            throw new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
+        }
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error('Overpass returned invalid JSON');
+        }
+        if (!Array.isArray(data?.elements)) {
+            throw new Error('Overpass response has no OSM elements');
+        }
+        return parseResidentialAreas(data.elements);
+    }
+
+    async function loadResidentialRanges(activityId, track) {
+        const cached = cachedResidentialRanges(activityId, track);
+        if (cached) return { ranges: cached, cached: true, areaCount: null };
+        const areas = await fetchResidentialAreas(track);
+        const ranges = crossedResidentialRanges(track, areas);
+        cacheResidentialRanges(activityId, track, ranges);
+        return { ranges, cached: false, areaCount: areas.length };
+    }
+
+    // Keep the first language variant in bilingual OSM names. Optionally remove
+    // a trailing parenthetical qualifier while preserving hyphenated names.
     function cleanPlaceName(name) {
-        let n = name.split(/\s+[-–—]\s+|\s*\/\s*/)[0];
-        if (CONFIG.stripParentheticals) n = n.replace(/\s*\([^)]*\)\s*$/, '');
-        return n.trim() || name;
-    }
-
-    // The place as the map would label it: a village/town under its own name;
-    // urban districts collapse to their city; hamlets and farms are marked
-    // minor (below the label threshold). On loop rides the start/finish reads
-    // as the home city ("Cottbus"), not the home suburb ("Klein Ströbitz").
-    // Returns { name, imp, minor? } or null.
-    function waypointOf(geo, edge) {
-        if (!geo) return null;
-        const a = geo.a || {};
-        const base = { imp: geo.i || 0, cy: geo.y, cx: geo.x };
-        if (edge && a.city) return { ...base, name: cleanPlaceName(a.city) };
-        if (MAJOR_PLACES.includes(geo.t) && geo.n) {
-            // cc: village/town claims are verified against their centre later
-            // ("crossed its land" is not "went there"); a city you are inside
-            // of needs no such check
-            return { ...base, name: cleanPlaceName(geo.n), cc: geo.t !== 'city' };
+        let cleaned = name.split(/\s+[-–—]\s+|\s*\/\s*/)[0];
+        if (CONFIG.stripParentheticals) {
+            cleaned = cleaned.replace(/\s*\([^)]*\)\s*$/, '');
         }
-        // A point whose nearest feature is a lone farmstead is AT that
-        // farmstead, not in the village that administratively owns it —
-        // passing Ausbau (two houses of Guhrow) is not visiting Guhrow
-        if (MINOR_PLACES.includes(geo.t) && geo.n) return { ...base, name: cleanPlaceName(geo.n), minor: true };
-        if (a.village) return { ...base, name: cleanPlaceName(a.village), cc: true };
-        if (a.town) return { ...base, name: cleanPlaceName(a.town), cc: true };
-        if (a.hamlet) return { ...base, name: cleanPlaceName(a.hamlet), minor: true };
-        for (const f of PARENT_PLACES) if (a[f]) return { ...base, name: cleanPlaceName(a[f]) };
-        return null;
+        return cleaned.trim() || name;
     }
 
-    // Name of the place at exactly this fallback tier
-    function nameAt(geo, tier) {
-        if (!geo || !geo.a) return null;
-        for (const field of TIERS[tier]) {
-            if (geo.a[field]) return cleanPlaceName(geo.a[field]);
+    // Zoom 18 gives the exact address hierarchy; zoom 14 gives the local
+    // settlement/boundary. Reconcile both levels so a nearby place node does
+    // not win and city/village districts do not replace their parent place.
+    const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
+    const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
+    const PRIMARY_SETTLEMENT_TYPES = new Set(['hamlet', 'village', 'town', 'city']);
+
+    function addressPlaceNames(address, fields) {
+        if (!address) return [];
+        const names = [];
+        for (const field of fields) {
+            if (typeof address[field] !== 'string' || !address[field].trim()) continue;
+            const name = cleanPlaceName(address[field]);
+            if (name && !names.includes(name)) names.push(name);
         }
-        return null;
+        return names;
     }
 
-    // Identity used to decide whether two samples are "in the same place"
-    // during refinement; falls through to coarser data so stretches with no
-    // name (forest, water) don't trigger endless bisection
-    const KEYERS = {
-        settlement: geo => waypointOf(geo)?.name ?? nameAt(geo, 'district') ?? nameAt(geo, 'region'),
-        district:   geo => nameAt(geo, 'district') ?? waypointOf(geo)?.name ?? nameAt(geo, 'region'),
-    };
+    function optionalPlaceName(value) {
+        return typeof value === 'string' && value.trim() ? cleanPlaceName(value) : null;
+    }
 
-    // --- GEOCODING ---
+    function placeNameOf(exactGeo, placeGeo) {
+        const address = exactGeo?.address || {};
+        const primaryNames = addressPlaceNames(address, PRIMARY_ADDRESS_FIELDS);
+        const districtNames = addressPlaceNames(address, DISTRICT_ADDRESS_FIELDS);
+        const primaryName = primaryNames[0] || null;
+        const districtName = districtNames[0] || null;
+        const placeName = optionalPlaceName(placeGeo?.name);
 
-    // Rate-limited, budgeted Nominatim client caching the useful parts of the
-    // response, so naming decisions can be revisited without extra requests.
-    function createGeocoder(onProgress) {
+        // Prefer a coarse result that the exact address hierarchy confirms.
+        if (placeName && primaryNames.includes(placeName)) return placeName;
+
+        // Settlement relations identify the containing place directly.
+        if (placeName && placeGeo?.osmType === 'relation'
+            && PRIMARY_SETTLEMENT_TYPES.has(placeGeo?.addressType)) return placeName;
+
+        // Nominatim labels both urban and rural districts as suburb relations.
+        // Collapse a district only when the exact hierarchy confirms its parent.
+        const isMatchingDistrictBoundary = placeName && placeGeo?.osmType === 'relation'
+            && placeGeo?.addressType === 'suburb' && districtNames.includes(placeName);
+        if (isMatchingDistrictBoundary) {
+            if (address.city) return primaryName || placeName;
+
+            const ruralParent = addressPlaceNames(address, ['village', 'town'])[0] || null;
+            const municipality = optionalPlaceName(address.municipality);
+            if (ruralParent && municipality && ruralParent === municipality) return ruralParent;
+            return placeName;
+        }
+
+        // A nearby unrelated place node must not override the exact hierarchy.
+        const cityDistrict = optionalPlaceName(address.city_district);
+        return cityDistrict || primaryName || districtName;
+    }
+
+    // The zoom is part of the key because each level has a different role.
+    function createGeocoder() {
         let lastCallAt = 0;
         let apiCalls = 0;
         return {
             get apiCalls() { return apiCalls; },
-            hasBudget() { return apiCalls < CONFIG.maxApiCalls; },
-            isCached(lat, lon) { return localStorage.getItem(cacheKey(lat, lon)) !== null; },
-            async reverse(lat, lon) {
-                const key = cacheKey(lat, lon);
+            async reverse(lat, lon, zoom) {
+                const key = geocodeCacheKey(lat, lon, zoom);
                 const stored = localStorage.getItem(key);
                 if (stored !== null) {
-                    try { return JSON.parse(stored); } catch (e) { localStorage.removeItem(key); }
+                    try {
+                        return JSON.parse(stored);
+                    } catch {
+                        localStorage.removeItem(key);
+                    }
                 }
 
                 const wait = CONFIG.rateLimit - (Date.now() - lastCallAt);
-                if (wait > 0) await sleep(wait); // Respect Nominatim's 1 req/sec policy
+                if (wait > 0) await sleep(wait);
 
                 apiCalls++;
-                onProgress?.(apiCalls);
                 const params = new URLSearchParams({
                     lat: String(lat),
                     lon: String(lon),
                     format: 'json',
-                    zoom: String(CONFIG.nominatimZoom),
+                    zoom: String(zoom),
                     addressdetails: '1',
                     'accept-language': 'en',
                 });
                 try {
-                    const res = await fetch(`${NOMINATIM_URL}?${params}`, {
-                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.7' }
+                    const response = await fetch(`${NOMINATIM_URL}?${params}`, {
+                        headers: { 'Accept': 'application/json' },
                     });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const data = await res.json();
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const data = await response.json();
                     const geo = {
-                        t: data.addresstype ?? null,   // type of the feature found (village, suburb, ...)
-                        n: data.name || null,          // its own name
-                        i: data.importance ?? null,    // map prominence (0..1)
-                        y: data.lat ? parseFloat(data.lat) : null, // feature centre
-                        x: data.lon ? parseFloat(data.lon) : null,
-                        a: data.address ?? null,       // full address hierarchy
+                        osmType: data.osm_type ?? null,
+                        addressType: data.addresstype ?? null,
+                        name: data.name || null,
+                        address: data.address ?? null,
                     };
-                    try { localStorage.setItem(key, JSON.stringify(geo)); } catch (e) { /* cache full */ }
+                    try {
+                        localStorage.setItem(key, JSON.stringify(geo));
+                    } catch {
+                        // A cache write failure must not prevent naming the route.
+                    }
                     return geo;
-                } catch (e) {
-                    console.error('[Strava Renamer] Geocoding error:', e);
-                    return null; // Not cached — will be retried on the next run
+                } catch (error) {
+                    console.error('[Strava Renamer] Geocoding error:', error);
+                    throw new Error(`Nominatim failed at ${lat.toFixed(5)}, ${lon.toFixed(5)}: ${error.message}`);
                 } finally {
                     lastCallAt = Date.now();
                 }
@@ -297,321 +564,165 @@
         };
     }
 
-    // --- SAMPLING ---
+    // Limit only the displayed narrative; every crossed residential stretch
+    // remains valid and is still geocoded. Every passage is assessed on its
+    // own residential distance, regardless of its name or direction. Start
+    // and finish are protected.
+    function compactRouteRuns(runs) {
+        const limit = Math.max(2, Math.floor(CONFIG.maxNamePlaces));
+        const kept = runs.map(run => ({ ...run }));
 
-    // Initial sample positions: every seedKm along the track, plus start, end,
-    // the farthest point and every corner, deduplicated and sorted
-    function seedIndices(track, cornerIdxs) {
-        const step = Math.max(CONFIG.seedKm, track.total / (CONFIG.maxSeeds - 1));
-        const indices = new Set([0, track.dists.length - 1, track.farthestIdx, ...cornerIdxs]);
-        for (let target = step; target < track.total; target += step) {
-            indices.add(indexAtDistance(track.dists, target));
+        while (kept.length > limit && kept.length > 2) {
+            let removeAt = 1;
+            for (let i = 2; i < kept.length - 1; i++) {
+                if (kept[i].km < kept[removeAt].km) removeAt = i;
+            }
+
+            kept.splice(removeAt, 1);
         }
-        return [...indices].sort((a, b) => a - b);
+        return kept;
     }
 
-    // Recursively bisect segments whose endpoints resolve to different places,
-    // until each boundary is localized. Homogeneous stretches cost no
-    // requests; boundaries get all the detail.
-    async function refineSamples(samples, tier, track, geocoder) {
-        const keyOf = KEYERS[tier];
-        // Boundary precision scales with ride length: exact boundaries don't
-        // matter for naming, only which places exist and roughly how much of
-        // the ride they cover — this keeps long rides within the API budget
-        const boundaryKm = Math.max(CONFIG.minSegmentKm, track.total / 25);
-        let i = 0;
-        while (i < samples.length - 1) {
-            const a = samples[i], b = samples[i + 1];
-            // A failed geocode (geo null) is unknown, not a place change
-            if (!a.geo || !b.geo) { i++; continue; }
-            const gapKm = track.dists[b.idx] - track.dists[a.idx];
-            if (keyOf(a.geo) === keyOf(b.geo)
-                || gapKm < boundaryKm || b.idx - a.idx < 2) { i++; continue; }
-
-            const midIdx = indexAtDistance(track.dists, (track.dists[a.idx] + track.dists[b.idx]) / 2);
-            if (midIdx <= a.idx || midIdx >= b.idx) { i++; continue; }
-
-            const lat = track.lats[midIdx], lon = track.lons[midIdx];
-            if (!geocoder.isCached(lat, lon) && !geocoder.hasBudget()) { i++; continue; }
-
-            samples.splice(i + 1, 0, { idx: midIdx, geo: await geocoder.reverse(lat, lon) });
-            // No i++ — re-examine the left half of the split segment next iteration
-        }
-    }
-
-    // --- NAMING ---
-
-    // Assemble a travel narrative from per-sample places produced by
-    // nameFor(geo, edge) -> { name, imp, minor? } | null: places in the order
-    // passed, consecutive repeats merged, later re-visits kept ("A - B - C -
-    // B - A"). At most maxPlacesInName UNIQUE places appear, chosen by route
-    // anchors first, then map prominence. Returns { text, count } or null.
-    function buildRouteName(samples, track, cornerIdxs, nameFor) {
-        const d = i => track.dists[samples[i].idx];
-
-        // Each sample "covers" the stretch of track closer to it than to its
-        // neighbours; that coverage weights the place it resolves to
-        const entries = samples.map((s, i) => {
-            const edge = track.isLoop && (i === 0 || i === samples.length - 1);
-            const wp = nameFor(s.geo, edge);
-            return wp && {
-                name: wp.name, imp: wp.imp || 0, minor: !!wp.minor, idx: s.idx,
-                cc: !!wp.cc, cy: wp.cy, cx: wp.cx,
-                km: (i === samples.length - 1 ? track.total : (d(i) + d(i + 1)) / 2)
-                  - (i === 0 ? 0 : (d(i - 1) + d(i)) / 2),
-            };
-        }).filter(Boolean);
-        if (entries.length === 0) return null;
-
-        // Travel narrative: merge consecutive repeats only. Each run owns the
-        // track span halfway out to its neighbouring entries.
-        const loBound = k => k === 0 ? 0 : (entries[k - 1].idx + entries[k].idx) >> 1;
-        const hiBound = k => k === entries.length - 1
-            ? track.lats.length - 1 : (entries[k].idx + entries[k + 1].idx) >> 1;
+    // Every continuous residential stretch contributes exactly one address in
+    // travel order. Adjacent duplicates merge immediately; every later revisit
+    // of a selected place remains visible.
+    async function routePlaceNames(ranges, track, geocoder, onProgress) {
         const runs = [];
-        entries.forEach((e, k) => {
+        for (let i = 0; i < ranges.length; i++) {
+            onProgress?.(i + 1, ranges.length);
+            const range = ranges[i];
+            const lat = track.lats[range.anchor];
+            const lon = track.lons[range.anchor];
+            const exactGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimAddressZoom);
+            const placeGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimPlaceZoom);
+            const name = placeNameOf(exactGeo, placeGeo);
+            const distanceLabel = `${range.fromKm.toFixed(2)}–${range.toKm.toFixed(2)} km`;
+            console.log(`[Strava Renamer] Residential ${distanceLabel}: ${name || 'no settlement address'}`
+                + ` (zoom ${CONFIG.nominatimPlaceZoom}: ${placeGeo?.name || 'none'})`);
+            if (!name) continue;
             const last = runs[runs.length - 1];
-            if (last && last.name === e.name) {
-                last.km += e.km; last.idxs.push(e.idx); last.hi = hiBound(k);
+            if (last?.name === name) {
+                last.km += range.km;
+                last.toKm = range.toKm;
             } else {
-                runs.push({ name: e.name, km: e.km, idxs: [e.idx],
-                    lo: loBound(k), hi: hiBound(k) });
+                runs.push({ name, km: range.km, fromKm: range.fromKm, toKm: range.toKm });
             }
-        });
-
-        // One geometric predicate rules them all: a place is present at some
-        // part of the ride iff the track there passes within enterKm of the
-        // place centre. Crossing detached municipal land (Spreewald Kauper
-        // plots, a village's fields) never counts, no matter what the
-        // reverse geocoder says about the land.
-        const centresByName = new Map();
-        for (const e of entries) {
-            if (!e.cc || e.cy == null) continue;
-            if (!centresByName.has(e.name)) centresByName.set(e.name, new Set());
-            centresByName.get(e.name).add(`${e.cy},${e.cx}`);
-        }
-        const minTrackDist = (lo, hi, centres) => {
-            const step = Math.max(1, ((hi - lo) / 400) | 0);
-            let m = Infinity;
-            for (const c of centres) {
-                const [cy, cx] = c.split(',').map(Number);
-                for (let i = lo; i <= hi; i += step) {
-                    m = Math.min(m, getDistance(track.lats[i], track.lons[i], cy, cx));
-                }
-            }
-            return m;
-        };
-
-        // Stats per unique place. A place is minor when it has only
-        // hamlet-grade claims, or when the whole track never actually
-        // comes near it (administrative-land crossings only)
-        const byName = new Map();
-        for (const e of entries) {
-            const p = byName.get(e.name);
-            if (p) { p.km += e.km; p.imp = Math.max(p.imp, e.imp); p.allMinor = p.allMinor && e.minor; }
-            else byName.set(e.name, { name: e.name, km: e.km, imp: e.imp, allMinor: e.minor });
-        }
-        for (const p of byName.values()) {
-            const cs = centresByName.get(p.name);
-            p.minor = p.allMinor || (cs && cs.size
-                ? minTrackDist(0, track.lats.length - 1, cs) > CONFIG.enterKm
-                : false);
-        }
-        // Minor places (hamlets, farms, not-really-visited villages) only
-        // qualify when there is nothing bigger on the whole route
-        let candidates = [...byName.values()].filter(p => !p.minor);
-        if (candidates.length < 2) candidates = [...byName.values()];
-        const candidateNames = new Set(candidates.map(p => p.name));
-
-        const keep = new Set();
-        const addIf = (name, force) => {
-            if (name && keep.size < CONFIG.maxPlacesInName && byName.has(name)
-                && (force || candidateNames.has(name))) keep.add(name);
-        };
-        const nameNear = idx => {
-            const s = samples.reduce((best, c) =>
-                Math.abs(c.idx - idx) < Math.abs(best.idx - idx) ? c : best);
-            return nameFor(s.geo, false)?.name;
-        };
-        // Start and finish anchor the narrative; the farthest point and the
-        // two sharpest corners define the route's shape; remaining slots go
-        // by coverage — how much of the ride each place accounts for (an
-        // out-and-back corridor counts both legs). Nominatim importance is
-        // only a tiebreak: it is too noisy among equally-sized villages.
-        addIf(runs[0].name, true);
-        addIf(runs[runs.length - 1].name, true);
-        addIf(nameNear(track.farthestIdx), false);
-        let cornerSlots = 2;
-        for (const cornerIdx of cornerIdxs) {
-            if (cornerSlots <= 0) break;
-            const n = nameNear(cornerIdx);
-            if (n && !keep.has(n)) { addIf(n, false); if (keep.has(n)) cornerSlots--; }
-        }
-        for (const p of [...candidates].sort((x, y) => (y.km - x.km) || (y.imp - x.imp))) {
-            addIf(p.name, false);
         }
 
-        // Sample positions anchor places without a centre (a collapsed home
-        // city, fallback hamlets in the wilderness)
-        const posOf = new Map();
-        for (const e of entries) {
-            if (!posOf.has(e.name)) posOf.set(e.name, []);
-            posOf.get(e.name).push(e.idx);
+        const compacted = compactRouteRuns(runs);
+        if (compacted.length < runs.length) {
+            console.log(`[Strava Renamer] Name compacted from ${runs.length} to ${compacted.length} places: `
+                + compacted.map(run => run.name).join(' - '));
         }
-        // Each narrative position reads as the kept place whose centre the
-        // track passes closest THERE (within enterKm) — a run's own name has
-        // no privilege, so a stretch across detached municipal land reads as
-        // what it genuinely passes, or as nothing at all
-        const labelOf = run => {
-            let best = null, bestD = Infinity;
-            for (const name of keep) {
-                const cs = centresByName.get(name);
-                let d, limit;
-                if (cs && cs.size) {
-                    // keep only contains visited places, so the wider halo applies
-                    d = minTrackDist(run.lo, run.hi, cs);
-                    limit = CONFIG.haloKm;
-                } else {
-                    d = Infinity;
-                    for (const pi of posOf.get(name) ?? []) {
-                        for (const ri of run.idxs) {
-                            d = Math.min(d, getDistance(track.lats[ri], track.lons[ri],
-                                                        track.lats[pi], track.lons[pi]));
-                        }
-                    }
-                    limit = CONFIG.relabelKm;
-                }
-                if (d <= limit && d < bestD) { bestD = d; best = name; }
-            }
-            return best;
-        };
-
-        // Walk the narrative; re-merge what touches
-        const seq = [];
-        for (const r of runs) {
-            const label = labelOf(r);
-            if (!label) continue;
-            if (seq[seq.length - 1] !== label) seq.push(label);
-        }
-        console.log('[Strava Renamer] Runs: ' + runs.map(r =>
-            `${keep.has(r.name) ? '' : '~'}${r.name}:${r.km.toFixed(1)}`).join(' | '));
-        return { text: seq.join(' - '), count: keep.size };
+        return compacted.map(run => run.name);
     }
 
-    // --- DOM HELPERS ---
-
-    // Extract activity ID from URL
     function getActivityId() {
-        const m = window.location.href.match(/activities\/(\d+)/);
-        return m ? m[1] : null;
+        return window.location.pathname.match(/^\/activities\/(\d+)/)?.[1] || null;
     }
 
-    // --- MAIN FUNCTION ---
+    async function downloadGpx(activityId) {
+        const response = await fetch(`/activities/${activityId}/export_gpx`);
+        if (!response.ok) {
+            throw new Error('Failed to download GPX. Are you logged in?');
+        }
+        return response.text();
+    }
 
-    /**
-     * How the algorithm works:
-     * 1. Download the GPX track, parse points, compute cumulative distances
-     * 2. Find geometric corner points (Douglas-Peucker) — where the rider
-     *    deliberately turned
-     * 3. Seed sample points every seedKm plus start, end, farthest point and
-     *    corners; reverse-geocode via Nominatim (response cached), then
-     *    recursively bisect segments whose endpoints lie in different places
-     * 4. Each sample becomes the place a map would label there: village/town
-     *    under its own name, urban districts collapsed to their city,
-     *    hamlets/farms marked as below the label threshold
-     * 5. Name = travel narrative: places in the order passed, consecutive
-     *    repeats merged, re-visits kept ("Cottbus - Sielow - Werben - Burg -
-     *    Dissen - Sielow - Cottbus"). At most maxPlacesInName unique places:
-     *    start/finish first (on loops promoted to the home city), then the
-     *    farthest point and corner places, then map prominence. Falls back to
-     *    district naming within one city, then to county/state
-     * 6. Fill in the name field and focus it
-     */
+    function parseGpxTrack(gpxText) {
+        const xml = new DOMParser().parseFromString(gpxText, 'text/xml');
+        if (xml.querySelector('parsererror')) {
+            throw new Error('Downloaded GPX is not valid XML.');
+        }
+
+        const points = Array.from(xml.getElementsByTagName('trkpt'));
+        if (points.length === 0) return null;
+
+        const lats = [];
+        const lons = [];
+        for (const point of points) {
+            const lat = Number.parseFloat(point.getAttribute('lat'));
+            const lon = Number.parseFloat(point.getAttribute('lon'));
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                throw new Error('Downloaded GPX contains an invalid track point.');
+            }
+            lats.push(lat);
+            lons.push(lon);
+        }
+
+        const dists = [0];
+        for (let i = 1; i < lats.length; i++) {
+            dists.push(dists[i - 1] + getDistance(
+                lats[i - 1], lons[i - 1], lats[i], lons[i],
+            ));
+        }
+        return {
+            lats,
+            lons,
+            dists,
+            total: dists[dists.length - 1],
+        };
+    }
+
     async function generateAndFillName(btn) {
         const activityId = getActivityId();
-        if (!activityId) { alert(STRINGS.noId); return; }
+        if (!activityId) {
+            alert(STRINGS.noId);
+            return;
+        }
 
         const nameInput = document.querySelector('input[name="activity[name]"]');
-        if (!nameInput) { alert('Could not find activity name field'); return; }
+        if (!nameInput) {
+            alert('Could not find activity name field');
+            return;
+        }
 
         btn.disabled = true;
-        setButtonState(btn, STRINGS.downloading, 'is-loading');
+        setButtonState(btn, STRINGS.downloading, 'loading');
 
         try {
-            // Step 1: Download GPX and parse track points
-            const gpxRes = await fetch(`/activities/${activityId}/export_gpx`);
-            if (!gpxRes.ok) throw new Error('Failed to download GPX. Are you logged in?');
-
-            setButtonState(btn, STRINGS.analyzing, 'is-loading');
-            const xml = new DOMParser().parseFromString(await gpxRes.text(), 'text/xml');
-            const trkpts = xml.getElementsByTagName('trkpt');
-            if (trkpts.length === 0) { alert(STRINGS.noGps); return; }
-
-            const lats = Array.from(trkpts).map(p => parseFloat(p.getAttribute('lat')));
-            const lons = Array.from(trkpts).map(p => parseFloat(p.getAttribute('lon')));
-
-            const dists = [0];
-            for (let i = 1; i < lats.length; i++) {
-                dists.push(dists[i - 1] + getDistance(lats[i-1], lons[i-1], lats[i], lons[i]));
+            const gpxText = await downloadGpx(activityId);
+            setButtonState(btn, STRINGS.analyzing, 'loading');
+            const track = parseGpxTrack(gpxText);
+            if (!track) {
+                alert(STRINGS.noGps);
+                return;
             }
-            const track = {
-                lats, lons, dists,
-                total: dists[dists.length - 1],
-                farthestIdx: farthestPointIndex(lats, lons),
-                isLoop: getDistance(lats[0], lons[0], lats[lats.length - 1], lons[lats.length - 1]) < 1,
-            };
+            console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${track.lats.length} trackpoints`);
 
-            // Step 2: Corner detection
-            const corners = findCorners(track);
-            console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${trkpts.length} trackpoints, ${corners.length} corners`);
-
-            // Step 3: Seed samples and refine place boundaries
-            setButtonState(btn, `${STRINGS.geocoding}...`, 'is-loading');
-            const geocoder = createGeocoder(n =>
-                setButtonState(btn, `${STRINGS.geocoding} ${n}/${CONFIG.maxApiCalls}...`, 'is-loading'));
-
-            const samples = [];
-            for (const idx of seedIndices(track, corners)) {
-                if (!geocoder.isCached(lats[idx], lons[idx]) && !geocoder.hasBudget()) continue;
-                samples.push({ idx, geo: await geocoder.reverse(lats[idx], lons[idx]) });
+            setButtonState(btn, STRINGS.landuse, 'loading');
+            const residential = await loadResidentialRanges(activityId, track);
+            console.log(`[Strava Renamer] ${residential.ranges.length} crossed residential stretches`
+                + (residential.cached ? ' (cached)' : ` from ${residential.areaCount} OSM areas`));
+            if (residential.ranges.length === 0) {
+                throw new Error('The route does not enter an OSM landuse=residential area.');
             }
-            await refineSamples(samples, 'settlement', track, geocoder);
 
-            // District-level detail is only needed when the whole ride
-            // resolves to a single city
-            const wpCount = new Set(
-                samples.map(s => waypointOf(s.geo)?.name).filter(Boolean)).size;
-            if (wpCount <= 1) await refineSamples(samples, 'district', track, geocoder);
-            console.log(`[Strava Renamer] ${samples.length} samples, ${geocoder.apiCalls} API calls`
-                + (geocoder.hasBudget() ? '' : ' (budget exhausted, boundaries localized coarsely)'));
-
-            // Steps 4-5: Build the name: waypoint narrative, then fallbacks
-            const asTier = tier => geo => {
-                const n = nameAt(geo, tier);
-                return n ? { name: n, imp: 0 } : null;
-            };
-            const wp = buildRouteName(samples, track, corners, waypointOf);
-            let newName = (wp && wp.count >= 2) ? wp.text : null;
-            if (!newName) {
-                const districts = buildRouteName(samples, track, corners, asTier('district'));
-                if (districts && districts.count >= 2) newName = districts.text;
+            setButtonState(btn, `${STRINGS.geocoding}...`, 'loading');
+            const geocoder = createGeocoder();
+            const places = await routePlaceNames(
+                residential.ranges,
+                track,
+                geocoder,
+                (done, total) => setButtonState(
+                    btn, `${STRINGS.geocoding} ${done}/${total}...`, 'loading'),
+            );
+            if (places.length === 0) {
+                throw new Error('Residential areas were crossed, but Nominatim returned no settlement address.');
             }
-            if (!newName && wp) newName = wp.text; // Ride within one city with no district data
-            if (!newName) newName = buildRouteName(samples, track, corners, asTier('region'))?.text;
-            newName = newName || 'Route Activity';
+            const newName = places.join(' - ');
+            console.log(`[Strava Renamer] ${residential.ranges.length} addresses, ${geocoder.apiCalls} API calls`);
             console.log(`[Strava Renamer] Name: ${newName}`);
 
-            // Step 6: Fill in and focus the input
             nameInput.value = newName;
             nameInput.dispatchEvent(new Event('input', { bubbles: true }));
             nameInput.focus();
-            setButtonState(btn, STRINGS.done, 'is-success');
+            setButtonState(btn, STRINGS.done, 'success');
             await sleep(CONFIG.successDelay);
-
-        } catch (err) {
-            console.error('[Strava Renamer]', err);
-            alert(`Error:\n${err.message}`);
-            setButtonState(btn, STRINGS.error, 'is-error');
+        } catch (error) {
+            console.error('[Strava Renamer]', error);
+            alert(`Error:\n${error.message}`);
+            setButtonState(btn, STRINGS.error, 'error');
             await sleep(CONFIG.errorDelay);
         } finally {
             btn.disabled = false;
@@ -619,58 +730,52 @@
         }
     }
 
-    // --- BUTTON ---
-
     function injectButton() {
         if (document.querySelector(`#${BUTTON_ID}`)) return;
 
-        const isEditPage = window.location.pathname.includes('/edit');
-        if (!isEditPage) return; // Only show button on edit page
-
-        // Place button after the Title label
         const titleLabel = document.querySelector('label[for="activity_name"]');
-        if (titleLabel) {
-            const btn = document.createElement('button');
-            btn.id = BUTTON_ID;
-            btn.innerText = STRINGS.idle;
-            btn.title = 'Generate name from GPS track';
-            btn.style.marginLeft = 'auto';
-            btn.style.verticalAlign = 'middle';
-            btn.style.fontSize = '12px';
-            btn.style.padding = '3px 10px';
-            btn.style.backgroundColor = '#fc4c02'; // Strava orange
-            btn.style.color = 'white';
-            btn.style.border = 'none';
-            btn.style.borderRadius = '3px';
-            btn.style.cursor = 'pointer';
-            btn.type = 'button';
-            btn.addEventListener('mouseenter', () => {
-                btn.style.backgroundColor = '#e34402'; // Darker on hover
-            });
-            btn.addEventListener('mouseleave', () => {
-                btn.style.backgroundColor = '#fc4c02';
-            });
-            btn.addEventListener('click', e => {
-                e.preventDefault();
-                void generateAndFillName(btn);
-            });
+        if (!titleLabel?.parentNode) return;
 
-            // Wrap label and button in flex container to align right
-            const wrapper = document.createElement('div');
-            wrapper.style.display = 'flex';
-            wrapper.style.alignItems = 'center';
+        const btn = document.createElement('button');
+        btn.id = BUTTON_ID;
+        btn.type = 'button';
+        btn.title = 'Generate name from GPS track';
+        Object.assign(btn.style, {
+            marginLeft: 'auto',
+            verticalAlign: 'middle',
+            fontSize: '12px',
+            padding: '3px 10px',
+            color: 'white',
+            border: 'none',
+            borderRadius: '3px',
+            cursor: 'pointer',
+        });
+        setButtonState(btn, STRINGS.idle);
+        btn.addEventListener('mouseenter', () => {
+            if (btn.dataset.state === 'idle') {
+                btn.style.backgroundColor = BUTTON_COLORS.hover;
+            }
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (btn.dataset.state === 'idle') {
+                btn.style.backgroundColor = BUTTON_COLORS.idle;
+            }
+        });
+        btn.addEventListener('click', event => {
+            event.preventDefault();
+            void generateAndFillName(btn);
+        });
 
-            titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-            wrapper.appendChild(titleLabel);
-            wrapper.appendChild(btn);
-
-            console.log('[Strava Renamer] Button injected');
-        }
+        const wrapper = document.createElement('div');
+        Object.assign(wrapper.style, {
+            display: 'flex',
+            alignItems: 'center',
+        });
+        titleLabel.parentNode.insertBefore(wrapper, titleLabel);
+        wrapper.append(titleLabel, btn);
+        console.log('[Strava Renamer] Button injected');
     }
 
-    cleanupLegacyCache();
-
-    // Watch for DOM changes (in case page loads dynamically)
     new MutationObserver(injectButton).observe(document.body, { childList: true, subtree: true });
     injectButton();
 })();
