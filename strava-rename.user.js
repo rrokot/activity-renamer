@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    http://tampermonkey.net/
-// @version      3.5
+// @version      3.7
 // @description  Automatically names Strava activities as a travel narrative of map-prominent places the route passes ("Cottbus - Sielow - Werben - Burg - Dissen - Sielow - Cottbus"), geocoding via OpenStreetMap Nominatim
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -20,7 +20,11 @@
         maxCorners:      6,   // Max geometric turn points forced into sampling and naming
         minCornerKm:   0.5,   // A turn counts as a corner when the route deviates at least this far
         relabelKm:     1.5,   // A dropped stretch within this distance of a kept place reads as that place
-        enterKm:       0.6,   // A village counts as visited only if the route comes this close to its centre
+        enterKm:      0.6,   // "Rode through" vs "passed by" a village: max distance track-to-centre.
+                              // Calibrated on real rides: entered places measure 0.02-0.42 km,
+                              // skirted ones 0.47+ (Guhrow, Briesen outbound, Schmogrow)
+        haloKm:       0.65,   // A VISITED place also labels nearby stretches (parallel roads along
+                              // its edge); unvisited places never label anything
         stripParentheticals: true, // "Burg (Spreewald)" -> "Burg"
         coordPrecision:  3,   // Decimal places for caching coordinates (~110m resolution)
         rateLimit:    1050,   // Min ms between Nominatim API calls (policy: max 1 req/sec)
@@ -208,9 +212,12 @@
             // of needs no such check
             return { ...base, name: cleanPlaceName(geo.n), cc: geo.t !== 'city' };
         }
+        // A point whose nearest feature is a lone farmstead is AT that
+        // farmstead, not in the village that administratively owns it —
+        // passing Ausbau (two houses of Guhrow) is not visiting Guhrow
+        if (MINOR_PLACES.includes(geo.t) && geo.n) return { ...base, name: cleanPlaceName(geo.n), minor: true };
         if (a.village) return { ...base, name: cleanPlaceName(a.village), cc: true };
         if (a.town) return { ...base, name: cleanPlaceName(a.town), cc: true };
-        if (MINOR_PLACES.includes(geo.t) && geo.n) return { ...base, name: cleanPlaceName(geo.n), minor: true };
         if (a.hamlet) return { ...base, name: cleanPlaceName(a.hamlet), minor: true };
         for (const f of PARENT_PLACES) if (a[f]) return { ...base, name: cleanPlaceName(a[f]) };
         return null;
@@ -266,7 +273,7 @@
                 });
                 try {
                     const res = await fetch(`${NOMINATIM_URL}?${params}`, {
-                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.5' }
+                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.7' }
                     });
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const data = await res.json();
@@ -350,59 +357,65 @@
             return wp && {
                 name: wp.name, imp: wp.imp || 0, minor: !!wp.minor, idx: s.idx,
                 cc: !!wp.cc, cy: wp.cy, cx: wp.cx,
-                // An administrative outlier: the sample sits on this place's
-                // land but far from the place itself (e.g. Spreewald Kauper
-                // plots 3 km from their village) — it must not put the place
-                // into the narrative at this position
-                far: !!(wp.cc && wp.cy != null && getDistance(
-                    track.lats[s.idx], track.lons[s.idx], wp.cy, wp.cx) > CONFIG.relabelKm),
                 km: (i === samples.length - 1 ? track.total : (d(i) + d(i + 1)) / 2)
                   - (i === 0 ? 0 : (d(i - 1) + d(i)) / 2),
             };
         }).filter(Boolean);
         if (entries.length === 0) return null;
 
-        // Travel narrative: merge consecutive repeats only. A run mentions
-        // its place genuinely (ok) if at least one sample is near the place
+        // Travel narrative: merge consecutive repeats only. Each run owns the
+        // track span halfway out to its neighbouring entries.
+        const loBound = k => k === 0 ? 0 : (entries[k - 1].idx + entries[k].idx) >> 1;
+        const hiBound = k => k === entries.length - 1
+            ? track.lats.length - 1 : (entries[k].idx + entries[k + 1].idx) >> 1;
         const runs = [];
-        for (const e of entries) {
+        entries.forEach((e, k) => {
             const last = runs[runs.length - 1];
             if (last && last.name === e.name) {
-                last.km += e.km; last.idxs.push(e.idx); last.ok = last.ok || !e.far;
+                last.km += e.km; last.idxs.push(e.idx); last.hi = hiBound(k);
             } else {
-                runs.push({ name: e.name, km: e.km, idxs: [e.idx], ok: !e.far });
+                runs.push({ name: e.name, km: e.km, idxs: [e.idx],
+                    lo: loBound(k), hi: hiBound(k) });
             }
-        }
+        });
 
-        // Stats per unique place
-        const byName = new Map();
+        // One geometric predicate rules them all: a place is present at some
+        // part of the ride iff the track there passes within enterKm of the
+        // place centre. Crossing detached municipal land (Spreewald Kauper
+        // plots, a village's fields) never counts, no matter what the
+        // reverse geocoder says about the land.
+        const centresByName = new Map();
         for (const e of entries) {
-            const centre = e.cc && e.cy != null ? [`${e.cy},${e.cx}`] : [];
-            const p = byName.get(e.name);
-            if (p) {
-                p.km += e.km; p.imp = Math.max(p.imp, e.imp);
-                p.minor = p.minor && e.minor; p.cc = p.cc && e.cc;
-                centre.forEach(c => p.centres.add(c));
-            } else {
-                byName.set(e.name, { name: e.name, km: e.km, imp: e.imp,
-                    minor: e.minor, cc: e.cc, centres: new Set(centre) });
-            }
+            if (!e.cc || e.cy == null) continue;
+            if (!centresByName.has(e.name)) centresByName.set(e.name, new Set());
+            centresByName.get(e.name).add(`${e.cy},${e.cx}`);
         }
-        // A village crossed only administratively — the route never comes
-        // near its centre — wasn't really visited: demote it below the label
-        // threshold (it can still read as a nearby kept place, like hamlets)
-        const stride = Math.max(1, Math.floor(track.lats.length / 500));
-        const centreDist = c => {
-            const [cy, cx] = c.split(',').map(Number);
+        const minTrackDist = (lo, hi, centres) => {
+            const step = Math.max(1, ((hi - lo) / 400) | 0);
             let m = Infinity;
-            for (let i = 0; i < track.lats.length; i += stride) {
-                m = Math.min(m, getDistance(track.lats[i], track.lons[i], cy, cx));
+            for (const c of centres) {
+                const [cy, cx] = c.split(',').map(Number);
+                for (let i = lo; i <= hi; i += step) {
+                    m = Math.min(m, getDistance(track.lats[i], track.lons[i], cy, cx));
+                }
             }
             return m;
         };
+
+        // Stats per unique place. A place is minor when it has only
+        // hamlet-grade claims, or when the whole track never actually
+        // comes near it (administrative-land crossings only)
+        const byName = new Map();
+        for (const e of entries) {
+            const p = byName.get(e.name);
+            if (p) { p.km += e.km; p.imp = Math.max(p.imp, e.imp); p.allMinor = p.allMinor && e.minor; }
+            else byName.set(e.name, { name: e.name, km: e.km, imp: e.imp, allMinor: e.minor });
+        }
         for (const p of byName.values()) {
-            if (p.minor || !p.cc || p.centres.size === 0) continue;
-            if (Math.min(...[...p.centres].map(centreDist)) > CONFIG.enterKm) p.minor = true;
+            const cs = centresByName.get(p.name);
+            p.minor = p.allMinor || (cs && cs.size
+                ? minTrackDist(0, track.lats.length - 1, cs) > CONFIG.enterKm
+                : false);
         }
         // Minor places (hamlets, farms, not-really-visited villages) only
         // qualify when there is nothing bigger on the whole route
@@ -438,37 +451,45 @@
             addIf(p.name, false);
         }
 
-        // A dropped stretch that hugs a kept place still reads as that place
-        // on the map (its label covers the surroundings) — e.g. a return leg
-        // sampled just across a village boundary. Reassign such runs to the
-        // nearby kept place instead of silently skipping them.
+        // Sample positions anchor places without a centre (a collapsed home
+        // city, fallback hamlets in the wilderness)
         const posOf = new Map();
         for (const e of entries) {
-            if (e.far) continue; // outliers must not anchor their own name
             if (!posOf.has(e.name)) posOf.set(e.name, []);
             posOf.get(e.name).push(e.idx);
         }
-        const nearestKept = run => {
-            let best = null, bestD = CONFIG.relabelKm;
+        // Each narrative position reads as the kept place whose centre the
+        // track passes closest THERE (within enterKm) — a run's own name has
+        // no privilege, so a stretch across detached municipal land reads as
+        // what it genuinely passes, or as nothing at all
+        const labelOf = run => {
+            let best = null, bestD = Infinity;
             for (const name of keep) {
-                for (const pi of posOf.get(name) ?? []) {
-                    for (const ri of run.idxs) {
-                        const dd = getDistance(track.lats[ri], track.lons[ri],
-                                               track.lats[pi], track.lons[pi]);
-                        if (dd <= bestD) { bestD = dd; best = name; }
+                const cs = centresByName.get(name);
+                let d, limit;
+                if (cs && cs.size) {
+                    // keep only contains visited places, so the wider halo applies
+                    d = minTrackDist(run.lo, run.hi, cs);
+                    limit = CONFIG.haloKm;
+                } else {
+                    d = Infinity;
+                    for (const pi of posOf.get(name) ?? []) {
+                        for (const ri of run.idxs) {
+                            d = Math.min(d, getDistance(track.lats[ri], track.lons[ri],
+                                                        track.lats[pi], track.lons[pi]));
+                        }
                     }
+                    limit = CONFIG.relabelKm;
                 }
+                if (d <= limit && d < bestD) { bestD = d; best = name; }
             }
             return best;
         };
 
-        // Walk the narrative; re-merge what touches. A kept place only claims
-        // runs that genuinely pass it — its administrative outliers read as a
-        // nearby kept place instead (minor-kept fallback places are exempt)
+        // Walk the narrative; re-merge what touches
         const seq = [];
         for (const r of runs) {
-            const genuine = r.ok || byName.get(r.name).minor;
-            const label = (keep.has(r.name) && genuine) ? r.name : nearestKept(r);
+            const label = labelOf(r);
             if (!label) continue;
             if (seq[seq.length - 1] !== label) seq.push(label);
         }
