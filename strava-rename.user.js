@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    http://tampermonkey.net/
-// @version      3.4
+// @version      3.5
 // @description  Automatically names Strava activities as a travel narrative of map-prominent places the route passes ("Cottbus - Sielow - Werben - Burg - Dissen - Sielow - Cottbus"), geocoding via OpenStreetMap Nominatim
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -266,7 +266,7 @@
                 });
                 try {
                     const res = await fetch(`${NOMINATIM_URL}?${params}`, {
-                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.4' }
+                        headers: { 'User-Agent': 'StravaActivityRouteRenamer/3.5' }
                     });
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const data = await res.json();
@@ -350,18 +350,28 @@
             return wp && {
                 name: wp.name, imp: wp.imp || 0, minor: !!wp.minor, idx: s.idx,
                 cc: !!wp.cc, cy: wp.cy, cx: wp.cx,
+                // An administrative outlier: the sample sits on this place's
+                // land but far from the place itself (e.g. Spreewald Kauper
+                // plots 3 km from their village) — it must not put the place
+                // into the narrative at this position
+                far: !!(wp.cc && wp.cy != null && getDistance(
+                    track.lats[s.idx], track.lons[s.idx], wp.cy, wp.cx) > CONFIG.relabelKm),
                 km: (i === samples.length - 1 ? track.total : (d(i) + d(i + 1)) / 2)
                   - (i === 0 ? 0 : (d(i - 1) + d(i)) / 2),
             };
         }).filter(Boolean);
         if (entries.length === 0) return null;
 
-        // Travel narrative: merge consecutive repeats only
+        // Travel narrative: merge consecutive repeats only. A run mentions
+        // its place genuinely (ok) if at least one sample is near the place
         const runs = [];
         for (const e of entries) {
             const last = runs[runs.length - 1];
-            if (last && last.name === e.name) { last.km += e.km; last.idxs.push(e.idx); }
-            else runs.push({ name: e.name, km: e.km, idxs: [e.idx] });
+            if (last && last.name === e.name) {
+                last.km += e.km; last.idxs.push(e.idx); last.ok = last.ok || !e.far;
+            } else {
+                runs.push({ name: e.name, km: e.km, idxs: [e.idx], ok: !e.far });
+            }
         }
 
         // Stats per unique place
@@ -434,6 +444,7 @@
         // nearby kept place instead of silently skipping them.
         const posOf = new Map();
         for (const e of entries) {
+            if (e.far) continue; // outliers must not anchor their own name
             if (!posOf.has(e.name)) posOf.set(e.name, []);
             posOf.get(e.name).push(e.idx);
         }
@@ -451,10 +462,13 @@
             return best;
         };
 
-        // Walk the narrative; re-merge what touches
+        // Walk the narrative; re-merge what touches. A kept place only claims
+        // runs that genuinely pass it — its administrative outliers read as a
+        // nearby kept place instead (minor-kept fallback places are exempt)
         const seq = [];
         for (const r of runs) {
-            const label = keep.has(r.name) ? r.name : nearestKept(r);
+            const genuine = r.ok || byName.get(r.name).minor;
+            const label = (keep.has(r.name) && genuine) ? r.name : nearestKept(r);
             if (!label) continue;
             if (seq[seq.length - 1] !== label) seq.push(label);
         }
