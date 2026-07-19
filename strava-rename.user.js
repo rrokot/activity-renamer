@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    https://tampermonkey.net/
-// @version      4.3.0
+// @version      4.3.1
 // @description  Names Strava activities from the OSM residential areas actually crossed by the route
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -16,7 +16,10 @@
         residentialBufferM: 30,
         residentialCacheDays: 30,
         overpassMaxPoints: 180,
-        overpassTimeout: 45000,
+        overpassChunkPoints: 50,
+        overpassTimeout: 25000,
+        overpassAttempts: 3,
+        overpassRetryDelay: 2000,
         maxNamePlaces: 7,
         stripParentheticals: true,
         coordPrecision: 4,
@@ -31,7 +34,7 @@
         idle: 'Generate from Geo',
         downloading: '⌛ Downloading...',
         analyzing: '⌛ Analyzing...',
-        landuse: '⌛ Loading residential areas...',
+        landuse: '⌛ Loading residential areas',
         geocoding: '⌛ Geocoding',
         done: '✔️ Done!',
         error: '❌ Error',
@@ -44,6 +47,7 @@
     const GEOCODE_CACHE_PREFIX = 'strava_geocode_v9_';
     const RESIDENTIAL_CACHE_PREFIX = 'strava_residential_v1_';
     const BUTTON_ID = 'strava-route-rename-btn';
+    const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
     const BUTTON_COLORS = {
         idle: '#fc4c02',
         hover: '#e34402',
@@ -393,48 +397,96 @@
         }
     }
 
-    async function fetchResidentialAreas(track) {
-        const simplified = simplifyTrackForOverpass(track);
-        const radiusM = Math.ceil(CONFIG.residentialBufferM + simplified.toleranceKm * 1000 + 10);
-        const line = simplified.points
+    function splitOverpassLine(points) {
+        const maxPoints = Math.max(2, Math.floor(CONFIG.overpassChunkPoints));
+        if (points.length <= maxPoints) return [points];
+
+        // Adjacent chunks share an endpoint so the around filter leaves no gap.
+        const chunkCount = Math.ceil((points.length - 1) / (maxPoints - 1));
+        return Array.from({ length: chunkCount }, (_, index) => {
+            const start = Math.floor(index * (points.length - 1) / chunkCount);
+            const end = Math.floor((index + 1) * (points.length - 1) / chunkCount);
+            return points.slice(start, end + 1);
+        });
+    }
+
+    function residentialOverpassQuery(points, radiusM) {
+        const line = points
             .map(p => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(',');
-        const query = `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeout / 1000)}];\n`
+        return `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeout / 1000)}];\n`
             + `(way["landuse"="residential"](around:${radiusM},${line});`
             + `relation["landuse"="residential"](around:${radiusM},${line}););\n`
             + 'out body geom;';
-
-        let response;
-        try {
-            response = await fetch(OVERPASS_URL, {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-                },
-                body: `data=${encodeURIComponent(query)}`,
-            });
-        } catch (error) {
-            throw new Error(`Failed to load OSM residential areas: ${error?.message || 'network error'}`);
-        }
-        if (!response.ok) {
-            throw new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
-        }
-        let data;
-        try {
-            data = await response.json();
-        } catch {
-            throw new Error('Overpass returned invalid JSON');
-        }
-        if (!Array.isArray(data?.elements)) {
-            throw new Error('Overpass response has no OSM elements');
-        }
-        return parseResidentialAreas(data.elements);
     }
 
-    async function loadResidentialRanges(activityId, track) {
+    async function fetchOverpassElements(points, radiusM) {
+        const query = residentialOverpassQuery(points, radiusM);
+        const attempts = Math.max(1, Math.floor(CONFIG.overpassAttempts));
+        let lastError;
+
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            let response;
+            try {
+                response = await fetch(OVERPASS_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    },
+                    body: `data=${encodeURIComponent(query)}`,
+                });
+            } catch (error) {
+                lastError = new Error(`Failed to load OSM residential areas: ${error?.message || 'network error'}`);
+            }
+
+            if (response?.ok) {
+                let data;
+                try {
+                    data = await response.json();
+                } catch {
+                    throw new Error('Overpass returned invalid JSON');
+                }
+                if (!Array.isArray(data?.elements)) {
+                    throw new Error('Overpass response has no OSM elements');
+                }
+                return data.elements;
+            }
+
+            if (response) {
+                lastError = new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
+                if (!TRANSIENT_OVERPASS_STATUSES.has(response.status)) throw lastError;
+            }
+            if (attempt === attempts) break;
+
+            const delay = CONFIG.overpassRetryDelay * 2 ** (attempt - 1);
+            console.warn(`[Strava Renamer] ${lastError.message}; retrying in ${(delay / 1000).toFixed(1)}s`
+                + ` (${attempt}/${attempts})`);
+            await sleep(delay);
+        }
+
+        throw lastError;
+    }
+
+    async function fetchResidentialAreas(track, onProgress) {
+        const simplified = simplifyTrackForOverpass(track);
+        const radiusM = Math.ceil(CONFIG.residentialBufferM + simplified.toleranceKm * 1000 + 10);
+        const chunks = splitOverpassLine(simplified.points);
+        const elementsById = new Map();
+
+        for (let index = 0; index < chunks.length; index++) {
+            onProgress?.(index + 1, chunks.length);
+            const elements = await fetchOverpassElements(chunks[index], radiusM);
+            for (const element of elements) {
+                elementsById.set(`${element.type}:${element.id}`, element);
+            }
+        }
+        return parseResidentialAreas([...elementsById.values()]);
+    }
+
+    async function loadResidentialRanges(activityId, track, onProgress) {
         const cached = cachedResidentialRanges(activityId, track);
         if (cached) return { ranges: cached, cached: true, areaCount: null };
-        const areas = await fetchResidentialAreas(track);
+        const areas = await fetchResidentialAreas(track, onProgress);
         const ranges = crossedResidentialRanges(track, areas);
         cacheResidentialRanges(activityId, track, ranges);
         return { ranges, cached: false, areaCount: areas.length };
@@ -690,8 +742,13 @@
             }
             console.log(`[Strava Renamer] ${track.total.toFixed(1)} km, ${track.lats.length} trackpoints`);
 
-            setButtonState(btn, STRINGS.landuse, 'loading');
-            const residential = await loadResidentialRanges(activityId, track);
+            setButtonState(btn, `${STRINGS.landuse}...`, 'loading');
+            const residential = await loadResidentialRanges(
+                activityId,
+                track,
+                (done, total) => setButtonState(
+                    btn, `${STRINGS.landuse} ${done}/${total}...`, 'loading'),
+            );
             console.log(`[Strava Renamer] ${residential.ranges.length} crossed residential stretches`
                 + (residential.cached ? ' (cached)' : ` from ${residential.areaCount} OSM areas`));
             if (residential.ranges.length === 0) {
