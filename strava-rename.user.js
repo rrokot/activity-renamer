@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Strava Activity Route Renamer
 // @namespace    https://tampermonkey.net/
-// @version      4.4.3
-// @description  Names Strava activities from crossed OSM residential areas with custom favorite places
+// @version      4.7.4
+// @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
 // @grant        none
@@ -13,19 +13,19 @@
     'use strict';
 
     const CONFIG = {
-        residentialBufferM: 30,
-        residentialCacheDays: 30,
+        placeRadiusM: 300,
+        roadMatchRadiusM: 25,
+        featureCacheDays: 30,
         overpassMaxRoutePoints: 50,
         overpassTimeoutMs: 25000,
         overpassMaxAttempts: 3,
         overpassRetryBaseMs: 5000,
-        maxNamePlaces: 7,
+        minAutoPlaces: 3,
+        maxAutoPlaces: 7,
+        autoPlaceSpacingKm: 4,
         favoriteRadiusM: 200,
         stripPlaceParentheticals: true,
-        geocodeCachePrecision: 4,
         nominatimIntervalMs: 1050,
-        nominatimPlaceZoom: 14,
-        nominatimAddressZoom: 18,
         successStateMs: 1500,
         errorStateMs: 2000,
     };
@@ -34,9 +34,8 @@
         idle: 'Generate from Geo',
         downloading: '⌛ Downloading...',
         analyzing: '⌛ Analyzing...',
-        landuse: '⌛ Loading residential areas',
+        places: '⌛ Loading nearby landmarks',
         overpassBusy: '⌛ Overpass busy; retrying in',
-        geocoding: '⌛ Geocoding',
         done: '✔️ Done!',
         error: '❌ Error',
         noGps: 'No GPS data found (manual entry or indoor activity?)',
@@ -44,13 +43,11 @@
     };
 
     const API_URL = {
-        nominatim: 'https://nominatim.openstreetmap.org/reverse',
         nominatimSearch: 'https://nominatim.openstreetmap.org/search',
         overpass: 'https://overpass-api.de/api/interpreter',
     };
     const CACHE_PREFIX = {
-        geocode: 'strava_geocode_v9_',
-        residential: 'strava_residential_v1_',
+        routeFeatures: 'strava_route_features_v1_',
     };
     const STORAGE_KEY = {
         favorites: 'strava_route_favorites_v1',
@@ -150,13 +147,6 @@
         return `favorite_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
-    function geocodeCacheKey(lat, lon, zoom) {
-        const precision = CONFIG.geocodeCachePrecision;
-        const roundedLat = Number(lat).toFixed(precision);
-        const roundedLon = Number(lon).toFixed(precision);
-        return `${CACHE_PREFIX.geocode}z${zoom}_${roundedLat}_${roundedLon}`;
-    }
-
     function setButtonState(button, text, state = 'idle') {
         button.textContent = text;
         button.dataset.state = state;
@@ -174,25 +164,9 @@
         return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function indexAtDistance(cumulativeKm, targetKm) {
-        let lo = 0;
-        let hi = cumulativeKm.length - 1;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (cumulativeKm[mid] < targetKm) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        const previousIsCloser = lo > 0
-            && Math.abs(cumulativeKm[lo - 1] - targetKm) < Math.abs(cumulativeKm[lo] - targetKm);
-        return previousIsCloser ? lo - 1 : lo;
-    }
-
     // Douglas-Peucker simplification keeps the Overpass linestring compact.
-    // The query radius includes the simplification tolerance, so no residential
-    // polygon near the original GPX line is lost when bends are removed.
+    // The query radius includes the simplification tolerance, so no settlement
+    // near the original GPX line is lost when bends are removed.
     function simplifyTrackForOverpass(track) {
         const n = track.latitudes.length;
         if (n <= 2) {
@@ -263,194 +237,6 @@
         };
     }
 
-    const sameCoordinate = (a, b) =>
-        Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lon - b.lon) < 1e-7;
-
-    function normalizeRing(geometry) {
-        return (geometry || [])
-            .filter(point => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
-            .map(point => ({ lat: point.lat, lon: point.lon }));
-    }
-
-    // Multipolygon members may be split into several OSM ways. Join matching
-    // endpoints into closed rings before running point-in-polygon tests.
-    function stitchRings(geometries) {
-        const pending = geometries.map(normalizeRing).filter(geometry => geometry.length >= 2);
-        const rings = [];
-        while (pending.length) {
-            let ring = pending.pop();
-            let joined = true;
-            while (!sameCoordinate(ring[0], ring[ring.length - 1]) && joined) {
-                joined = false;
-                const head = ring[0];
-                const tail = ring[ring.length - 1];
-                for (let i = 0; i < pending.length; i++) {
-                    const segment = pending[i];
-                    const first = segment[0];
-                    const last = segment[segment.length - 1];
-                    if (sameCoordinate(tail, first)) {
-                        ring = ring.concat(segment.slice(1));
-                    } else if (sameCoordinate(tail, last)) {
-                        ring = ring.concat(segment.slice(0, -1).reverse());
-                    } else if (sameCoordinate(head, last)) {
-                        ring = segment.slice(0, -1).concat(ring);
-                    } else if (sameCoordinate(head, first)) {
-                        ring = segment.slice(1).reverse().concat(ring);
-                    } else {
-                        continue;
-                    }
-                    pending.splice(i, 1);
-                    joined = true;
-                    break;
-                }
-            }
-            if (ring.length >= 4 && sameCoordinate(ring[0], ring[ring.length - 1])) rings.push(ring);
-        }
-        return rings;
-    }
-
-    function createResidentialArea(outers, inners = []) {
-        if (!outers.length) return null;
-        const bbox = { south: Infinity, west: Infinity, north: -Infinity, east: -Infinity };
-        for (const ring of outers) {
-            for (const point of ring) {
-                bbox.south = Math.min(bbox.south, point.lat);
-                bbox.west = Math.min(bbox.west, point.lon);
-                bbox.north = Math.max(bbox.north, point.lat);
-                bbox.east = Math.max(bbox.east, point.lon);
-            }
-        }
-        return {
-            outers,
-            inners,
-            bbox,
-        };
-    }
-
-    function parseResidentialAreas(elements) {
-        const areas = [];
-        for (const element of elements || []) {
-            if (element.type === 'way') {
-                const ring = normalizeRing(element.geometry);
-                if (ring.length >= 4 && sameCoordinate(ring[0], ring[ring.length - 1])) {
-                    const area = createResidentialArea([ring]);
-                    if (area) areas.push(area);
-                }
-                continue;
-            }
-            if (element.type !== 'relation') continue;
-            const members = (element.members || [])
-                .filter(member => member.type === 'way' && member.geometry);
-            const outerSegments = members
-                .filter(member => member.role !== 'inner')
-                .map(member => member.geometry);
-            const innerSegments = members
-                .filter(member => member.role === 'inner')
-                .map(member => member.geometry);
-            const area = createResidentialArea(stitchRings(outerSegments), stitchRings(innerSegments));
-            if (area) areas.push(area);
-        }
-        return areas;
-    }
-
-    function pointInRing(lat, lon, ring) {
-        let inside = false;
-        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-            const yi = ring[i].lat;
-            const yj = ring[j].lat;
-            const xi = ring[i].lon;
-            const xj = ring[j].lon;
-            if ((yi > lat) !== (yj > lat)
-                && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
-                inside = !inside;
-            }
-        }
-        return inside;
-    }
-
-    function pointSegmentDistanceKm(lat, lon, a, b) {
-        const kx = 111.32 * Math.cos(lat * Math.PI / 180);
-        const ky = 110.57;
-        const ax = (a.lon - lon) * kx;
-        const ay = (a.lat - lat) * ky;
-        const bx = (b.lon - lon) * kx;
-        const by = (b.lat - lat) * ky;
-        const dx = bx - ax;
-        const dy = by - ay;
-        const len2 = dx * dx + dy * dy;
-        const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
-        return Math.hypot(ax + t * dx, ay + t * dy);
-    }
-
-    function ringDistanceKm(lat, lon, ring, limitKm) {
-        let bestKm = Infinity;
-        for (let i = 1; i < ring.length; i++) {
-            bestKm = Math.min(bestKm, pointSegmentDistanceKm(lat, lon, ring[i - 1], ring[i]));
-            if (bestKm <= limitKm) break;
-        }
-        return bestKm;
-    }
-
-    function pointTouchesResidential(lat, lon, areas) {
-        const bufferKm = CONFIG.residentialBufferM / 1000;
-        const dLat = bufferKm / 110.57;
-        const dLon = bufferKm / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
-        for (const area of areas) {
-            const bbox = area.bbox;
-            if (lat < bbox.south - dLat || lat > bbox.north + dLat
-                || lon < bbox.west - dLon || lon > bbox.east + dLon) {
-                continue;
-            }
-
-            const inOuter = area.outers.some(ring => pointInRing(lat, lon, ring));
-            const inInner = area.inners.some(ring => pointInRing(lat, lon, ring));
-            if (inOuter && !inInner) return true;
-
-            const nearOuterBoundary = area.outers.some(ring =>
-                ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm);
-            const nearInnerBoundary = area.inners.some(ring =>
-                ringDistanceKm(lat, lon, ring, bufferKm) <= bufferKm);
-            if (nearOuterBoundary || nearInnerBoundary) return true;
-        }
-        return false;
-    }
-
-    function crossedResidentialRanges(track, areas) {
-        const ranges = [];
-        let start = null;
-        for (let i = 0; i < track.latitudes.length; i++) {
-            const inside = pointTouchesResidential(track.latitudes[i], track.longitudes[i], areas);
-            if (inside && start === null) {
-                start = i;
-            }
-            if (!inside && start !== null) {
-                ranges.push({ start, end: i - 1 });
-                start = null;
-            }
-        }
-        if (start !== null) {
-            ranges.push({ start, end: track.latitudes.length - 1 });
-        }
-
-        return ranges.map(range => {
-            const fromKm = range.start === 0 ? 0
-                : (track.cumulativeKm[range.start - 1] + track.cumulativeKm[range.start]) / 2;
-            const toKm = range.end === track.latitudes.length - 1 ? track.totalKm
-                : (track.cumulativeKm[range.end] + track.cumulativeKm[range.end + 1]) / 2;
-            return {
-                ...range,
-                fromKm,
-                toKm,
-                km: toKm - fromKm,
-                anchor: indexAtDistance(track.cumulativeKm, (fromKm + toKm) / 2),
-            };
-        });
-    }
-
-    function residentialCacheKey(activityId) {
-        return `${CACHE_PREFIX.residential}${activityId}`;
-    }
-
     function trackSignature(track) {
         const last = track.latitudes.length - 1;
         return [
@@ -460,7 +246,8 @@
             track.longitudes[0].toFixed(5),
             track.latitudes[last].toFixed(5),
             track.longitudes[last].toFixed(5),
-            CONFIG.residentialBufferM,
+            CONFIG.placeRadiusM,
+            CONFIG.roadMatchRadiusM,
         ].join(':');
     }
 
@@ -478,38 +265,15 @@
             && Number.isFinite(range.km);
     }
 
-    function cachedResidentialRanges(activityId, track) {
-        const key = residentialCacheKey(activityId);
-        const value = readJsonCache(key);
-        if (!value) return null;
-
-        const maxAge = CONFIG.residentialCacheDays * 24 * 60 * 60 * 1000;
-        const isValid = value.signature === trackSignature(track)
-            && Number.isFinite(value.savedAt)
-            && Date.now() - value.savedAt <= maxAge
-            && Array.isArray(value.ranges)
-            && value.ranges.every(range => isValidCachedRange(range, track.latitudes.length));
-        if (!isValid) {
-            localStorage.removeItem(key);
-            return null;
-        }
-        return value.ranges;
-    }
-
-    function cacheResidentialRanges(activityId, track, ranges) {
-        writeJsonCache(residentialCacheKey(activityId), {
-            signature: trackSignature(track),
-            savedAt: Date.now(),
-            ranges,
-        });
-    }
-
-    function residentialOverpassQuery(points, radiusM) {
+    function routeFeatureOverpassQuery(points, placeRadiusM, roadRadiusM) {
         const line = points
             .map(point => `${point.lat.toFixed(6)},${point.lon.toFixed(6)}`).join(',');
         return `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeoutMs / 1000)}];\n`
-            + `(way["landuse"="residential"](around:${radiusM},${line});`
-            + `relation["landuse"="residential"](around:${radiusM},${line}););\n`
+            + '(\n'
+            + `node["place"~"^(city|town|village)$"](around:${placeRadiusM},${line});\n`
+            + 'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|'
+            + `residential|living_street|cycleway)$"]["name"](around:${roadRadiusM},${line});\n`
+            + ');\n'
             + 'out body geom;';
     }
 
@@ -539,10 +303,10 @@
         return data.elements;
     }
 
-    async function fetchOverpassElements(points, radiusM, onRetry) {
-        const query = residentialOverpassQuery(points, radiusM);
+    async function fetchOverpassElements(points, placeRadiusM, roadRadiusM, onRetry) {
+        const query = routeFeatureOverpassQuery(points, placeRadiusM, roadRadiusM);
         const attempts = Math.max(1, Math.floor(CONFIG.overpassMaxAttempts));
-        let failure = new Error('Failed to load OSM residential areas');
+        let failure = new Error('Failed to load nearby OSM landmarks');
 
         for (let attempt = 1; attempt <= attempts; attempt++) {
             let response;
@@ -556,13 +320,17 @@
                     body: `data=${encodeURIComponent(query)}`,
                 });
             } catch (error) {
-                failure = new Error(`Failed to load OSM residential areas: ${errorMessage(error)}`);
+                failure = new Error(`Failed to load nearby OSM landmarks: ${errorMessage(error)}`);
             }
 
-            if (response?.ok) return parseOverpassElements(response);
-
-            if (response) {
-                failure = new Error(`Failed to load OSM residential areas: HTTP ${response.status}`);
+            if (response?.ok) {
+                try {
+                    return await parseOverpassElements(response);
+                } catch (error) {
+                    failure = new Error(`Failed to load nearby OSM landmarks: ${errorMessage(error)}`);
+                }
+            } else if (response) {
+                failure = new Error(`Failed to load nearby OSM landmarks: HTTP ${response.status}`);
                 if (!TRANSIENT_OVERPASS_STATUSES.has(response.status)) throw failure;
             }
             if (attempt === attempts) throw failure;
@@ -576,20 +344,21 @@
         throw failure;
     }
 
-    async function fetchResidentialAreas(track, onRetry) {
+    async function fetchRouteFeatures(track, onRetry) {
         const simplified = simplifyTrackForOverpass(track);
-        const radiusM = Math.ceil(CONFIG.residentialBufferM + simplified.toleranceKm * 1000 + 10);
-        const elements = await fetchOverpassElements(simplified.points, radiusM, onRetry);
-        return parseResidentialAreas(elements);
-    }
-
-    async function loadResidentialRanges(activityId, track, onRetry) {
-        const cached = cachedResidentialRanges(activityId, track);
-        if (cached) return { ranges: cached, cached: true, areaCount: null };
-        const areas = await fetchResidentialAreas(track, onRetry);
-        const ranges = crossedResidentialRanges(track, areas);
-        cacheResidentialRanges(activityId, track, ranges);
-        return { ranges, cached: false, areaCount: areas.length };
+        const simplificationM = simplified.toleranceKm * 1000;
+        const placeRadiusM = Math.ceil(CONFIG.placeRadiusM + simplificationM + 10);
+        const roadRadiusM = Math.ceil(CONFIG.roadMatchRadiusM + simplificationM + 10);
+        const elements = await fetchOverpassElements(
+            simplified.points,
+            placeRadiusM,
+            roadRadiusM,
+            onRetry,
+        );
+        return {
+            places: parsePlaceNodes(elements),
+            roads: parseNamedRoads(elements),
+        };
     }
 
     // Keep the first language variant in bilingual OSM names. Optionally remove
@@ -602,9 +371,332 @@
         return cleaned.trim() || name;
     }
 
-    // Zoom 18 gives the exact address hierarchy; zoom 14 gives the local
-    // settlement/boundary. Every passage uses the same priority: a named
-    // settlement, then its district, then the containing city.
+    function parsePlaceNodes(elements) {
+        const places = [];
+        for (const element of elements || []) {
+            const lat = Number(element?.lat);
+            const lon = Number(element?.lon);
+            const placeType = element?.tags?.place;
+            const rawName = element?.tags?.['name:de'] || element?.tags?.name;
+            if (element?.type !== 'node'
+                || !Number.isFinite(lat) || !Number.isFinite(lon)
+                || !['city', 'town', 'village'].includes(placeType)
+                || typeof rawName !== 'string' || !rawName.trim()) {
+                continue;
+            }
+            places.push({
+                id: String(element.id),
+                name: cleanPlaceName(rawName),
+                placeType,
+                lat,
+                lon,
+            });
+        }
+        return places;
+    }
+
+    const ROAD_TYPE_PRIORITY = {
+        motorway: 8,
+        trunk: 7,
+        primary: 6,
+        secondary: 5,
+        tertiary: 4,
+        unclassified: 3,
+        residential: 2,
+        living_street: 1,
+        cycleway: 1,
+    };
+
+    function parseNamedRoads(elements) {
+        const roadsByName = new Map();
+        for (const element of elements || []) {
+            const roadType = element?.tags?.highway;
+            const rawName = element?.tags?.['name:de'] || element?.tags?.name;
+            const geometry = (element?.geometry || [])
+                .map(point => ({ lat: Number(point?.lat), lon: Number(point?.lon) }))
+                .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
+            if (element?.type !== 'way'
+                || !Object.hasOwn(ROAD_TYPE_PRIORITY, roadType)
+                || typeof rawName !== 'string' || !rawName.trim()
+                || geometry.length < 2) {
+                continue;
+            }
+
+            const name = cleanPlaceName(rawName);
+            const key = name.toLocaleLowerCase();
+            const existing = roadsByName.get(key);
+            if (existing) {
+                existing.geometries.push(geometry);
+                if (ROAD_TYPE_PRIORITY[roadType] > ROAD_TYPE_PRIORITY[existing.roadType]) {
+                    existing.roadType = roadType;
+                }
+            } else {
+                roadsByName.set(key, {
+                    id: `road_${element.id}`,
+                    name,
+                    roadType,
+                    geometries: [geometry],
+                });
+            }
+        }
+        return Array.from(roadsByName.values(), road => {
+            const bbox = { south: Infinity, west: Infinity, north: -Infinity, east: -Infinity };
+            for (const geometry of road.geometries) {
+                for (const point of geometry) {
+                    bbox.south = Math.min(bbox.south, point.lat);
+                    bbox.west = Math.min(bbox.west, point.lon);
+                    bbox.north = Math.max(bbox.north, point.lat);
+                    bbox.east = Math.max(bbox.east, point.lon);
+                }
+            }
+            return { ...road, bbox };
+        });
+    }
+
+    function passageDistances(track, start, end) {
+        const fromKm = start === 0 ? 0
+            : (track.cumulativeKm[start - 1] + track.cumulativeKm[start]) / 2;
+        const toKm = end === track.latitudes.length - 1 ? track.totalKm
+            : (track.cumulativeKm[end] + track.cumulativeKm[end + 1]) / 2;
+        return { fromKm, toKm, km: toKm - fromKm };
+    }
+
+    // A settlement contributes one event for every distinct pass within the
+    // configured radius. This intentionally uses OSM place nodes rather than
+    // reverse-geocoded administrative parents.
+    function passagesNearPlaces(track, places) {
+        const passages = [];
+        for (const place of places) {
+            let visit = null;
+            const finishVisit = () => {
+                if (!visit) return;
+                const distances = passageDistances(track, visit.start, visit.end);
+                passages.push({
+                    ...visit,
+                    ...distances,
+                    anchor: visit.index,
+                    lat: track.latitudes[visit.index],
+                    lon: track.longitudes[visit.index],
+                    baseName: place.name,
+                    address: `${place.name} (${place.placeType})`,
+                    placeId: place.id,
+                    placeType: place.placeType,
+                    featureKind: 'place',
+                });
+                visit = null;
+            };
+
+            for (let index = 0; index < track.latitudes.length; index++) {
+                const distanceM = haversineKm(
+                    place.lat,
+                    place.lon,
+                    track.latitudes[index],
+                    track.longitudes[index],
+                ) * 1000;
+                if (distanceM <= CONFIG.placeRadiusM) {
+                    if (!visit) {
+                        visit = { start: index, end: index, index, distanceM };
+                    } else {
+                        visit.end = index;
+                        if (distanceM < visit.distanceM) {
+                            visit.index = index;
+                            visit.distanceM = distanceM;
+                        }
+                    }
+                } else {
+                    finishVisit();
+                }
+            }
+            finishVisit();
+        }
+        return passages.sort((a, b) => a.anchor - b.anchor || a.distanceM - b.distanceM);
+    }
+
+    function pointSegmentDistanceKm(lat, lon, first, second) {
+        const kx = 111.32 * Math.cos(lat * Math.PI / 180);
+        const ky = 110.57;
+        const ax = (first.lon - lon) * kx;
+        const ay = (first.lat - lat) * ky;
+        const bx = (second.lon - lon) * kx;
+        const by = (second.lat - lat) * ky;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const lengthSquared = dx * dx + dy * dy;
+        const ratio = lengthSquared === 0 ? 0
+            : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / lengthSquared));
+        return Math.hypot(ax + ratio * dx, ay + ratio * dy);
+    }
+
+    function pointRoadDistanceKm(lat, lon, road, limitKm) {
+        const dLat = limitKm / 110.57;
+        const dLon = limitKm / Math.max(1, 111.32 * Math.cos(lat * Math.PI / 180));
+        if (lat < road.bbox.south - dLat || lat > road.bbox.north + dLat
+            || lon < road.bbox.west - dLon || lon > road.bbox.east + dLon) {
+            return Infinity;
+        }
+
+        let bestKm = Infinity;
+        for (const geometry of road.geometries) {
+            for (let i = 1; i < geometry.length; i++) {
+                const first = geometry[i - 1];
+                const second = geometry[i];
+                if (lat < Math.min(first.lat, second.lat) - dLat
+                    || lat > Math.max(first.lat, second.lat) + dLat
+                    || lon < Math.min(first.lon, second.lon) - dLon
+                    || lon > Math.max(first.lon, second.lon) + dLon) {
+                    continue;
+                }
+                bestKm = Math.min(
+                    bestKm,
+                    pointSegmentDistanceKm(lat, lon, first, second),
+                );
+            }
+        }
+        return bestKm;
+    }
+
+    function passagesNearRoads(track, roads) {
+        const passages = [];
+        const radiusKm = CONFIG.roadMatchRadiusM / 1000;
+        for (const road of roads) {
+            let visit = null;
+            const finishVisit = () => {
+                if (!visit) return;
+                const distances = passageDistances(track, visit.start, visit.end);
+                passages.push({
+                    ...visit,
+                    ...distances,
+                    anchor: visit.index,
+                    lat: track.latitudes[visit.index],
+                    lon: track.longitudes[visit.index],
+                    baseName: road.name,
+                    address: `${road.name} (${road.roadType})`,
+                    roadId: road.id,
+                    roadType: road.roadType,
+                    featureKind: 'road',
+                });
+                visit = null;
+            };
+
+            for (let index = 0; index < track.latitudes.length; index++) {
+                const distanceKm = pointRoadDistanceKm(
+                    track.latitudes[index],
+                    track.longitudes[index],
+                    road,
+                    radiusKm,
+                );
+                if (distanceKm <= radiusKm) {
+                    const distanceM = distanceKm * 1000;
+                    if (!visit) {
+                        visit = { start: index, end: index, index, distanceM };
+                    } else {
+                        visit.end = index;
+                        if (distanceM < visit.distanceM) {
+                            visit.index = index;
+                            visit.distanceM = distanceM;
+                        }
+                    }
+                } else {
+                    finishVisit();
+                }
+            }
+            finishVisit();
+        }
+        return passages.sort((a, b) => a.anchor - b.anchor || a.distanceM - b.distanceM);
+    }
+
+    function routeFeatureCacheKey(activityId) {
+        return `${CACHE_PREFIX.routeFeatures}${activityId}`;
+    }
+
+    function isValidCachedPassage(passage, trackLength) {
+        const commonIsValid = isValidCachedRange(passage, trackLength)
+            && typeof passage.baseName === 'string'
+            && passage.baseName.length > 0
+            && typeof passage.address === 'string'
+            && Number.isFinite(passage.lat)
+            && Number.isFinite(passage.lon)
+            && Number.isFinite(passage.distanceM);
+        if (!commonIsValid) return false;
+        if (passage.featureKind === 'place') {
+            return typeof passage.placeId === 'string'
+                && ['city', 'town', 'village'].includes(passage.placeType);
+        }
+        if (passage.featureKind === 'road') {
+            return typeof passage.roadId === 'string'
+                && Object.hasOwn(ROAD_TYPE_PRIORITY, passage.roadType);
+        }
+        return false;
+    }
+
+    function cachedRoutePassages(activityId, track) {
+        const key = routeFeatureCacheKey(activityId);
+        const value = readJsonCache(key);
+        if (!value) return null;
+
+        const maxAge = CONFIG.featureCacheDays * 24 * 60 * 60 * 1000;
+        const isValid = value.signature === trackSignature(track)
+            && Number.isFinite(value.savedAt)
+            && Date.now() - value.savedAt <= maxAge
+            && Array.isArray(value.passages)
+            && value.passages.every(passage => isValidCachedPassage(passage, track.latitudes.length));
+        if (!isValid) {
+            localStorage.removeItem(key);
+            return null;
+        }
+        return value;
+    }
+
+    function cacheRoutePassages(activityId, track, passages, placeCount, roadCount) {
+        writeJsonCache(routeFeatureCacheKey(activityId), {
+            signature: trackSignature(track),
+            savedAt: Date.now(),
+            passages,
+            placeCount,
+            roadCount,
+        });
+    }
+
+    async function loadRoutePassages(activityId, track, onRetry) {
+        const cached = cachedRoutePassages(activityId, track);
+        if (cached) {
+            return {
+                passages: cached.passages,
+                cached: true,
+                placeCount: cached.placeCount,
+                roadCount: cached.roadCount,
+            };
+        }
+
+        const features = await fetchRouteFeatures(track, onRetry);
+        const placePassages = passagesNearPlaces(track, features.places);
+        const placeRunCount = placePassages.reduce((count, passage, index) =>
+            index > 0 && placePassages[index - 1].baseName === passage.baseName
+                ? count
+                : count + 1, 0);
+        const roadPassages = placeRunCount < automaticPlaceLimit(track)
+            ? passagesNearRoads(track, features.roads)
+            : [];
+        const passages = placePassages
+            .concat(roadPassages)
+            .sort((a, b) => a.anchor - b.anchor || a.distanceM - b.distanceM);
+        cacheRoutePassages(
+            activityId,
+            track,
+            passages,
+            features.places.length,
+            features.roads.length,
+        );
+        return {
+            passages,
+            cached: false,
+            placeCount: features.places.length,
+            roadCount: features.roads.length,
+        };
+    }
+
+    // Nominatim address fields are used only to suggest a readable default
+    // when the user searches for a custom favorite.
     const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
     const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
@@ -676,48 +768,6 @@
 
         // A nearby unrelated place node must not override the exact hierarchy.
         return preferredExactName;
-    }
-
-    // The zoom is part of the key because each level has a different role.
-    function createGeocoder() {
-        let apiCalls = 0;
-        return {
-            get apiCalls() { return apiCalls; },
-            async reverse(lat, lon, zoom) {
-                const key = geocodeCacheKey(lat, lon, zoom);
-                const cached = readJsonCache(key);
-                if (cached) return cached;
-
-                apiCalls += 1;
-                const params = new URLSearchParams({
-                    lat: String(lat),
-                    lon: String(lon),
-                    format: 'json',
-                    zoom: String(zoom),
-                    addressdetails: '1',
-                    'accept-language': 'en',
-                });
-                try {
-                    const response = await requestNominatim(`${API_URL.nominatim}?${params}`);
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
-                    }
-                    const data = await response.json();
-                    const geo = {
-                        osmType: data.osm_type ?? null,
-                        addressType: data.addresstype ?? null,
-                        name: data.name || null,
-                        address: data.address ?? null,
-                    };
-                    writeJsonCache(key, geo);
-                    return geo;
-                } catch (error) {
-                    console.error(`${LOG_PREFIX} Geocoding error:`, error);
-                    const coordinate = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-                    throw new Error(`Nominatim failed at ${coordinate}: ${errorMessage(error)}`);
-                }
-            },
-        };
     }
 
     function favoriteCandidateFromSearchResult(result) {
@@ -832,23 +882,237 @@
         return first.start <= second.end && second.start <= first.end;
     }
 
-    // Limit only the displayed narrative; every crossed residential stretch
-    // remains valid and is still geocoded. Favorite visits are detected over
-    // the complete track. Start, finish, and favorite events are protected.
-    function compactRouteRuns(runs) {
-        const limit = Math.max(2, Math.floor(CONFIG.maxNamePlaces));
-        const kept = runs.map(run => ({ ...run }));
-
-        while (kept.length > limit && kept.length > 2) {
-            let removeAt = -1;
-            for (let i = 1; i < kept.length - 1; i++) {
-                if (kept[i].favorite) continue;
-                if (removeAt < 0 || kept[i].km < kept[removeAt].km) removeAt = i;
-            }
-            if (removeAt < 0) break;
-            kept.splice(removeAt, 1);
+    // The map viewport is determined by the route's geographical extent, not
+    // by travelled distance. A loop or an out-and-back can be long while still
+    // occupying a small area.
+    function routeMapExtentKm(track) {
+        let south = Infinity;
+        let west = Infinity;
+        let north = -Infinity;
+        let east = -Infinity;
+        for (let i = 0; i < track.latitudes.length; i++) {
+            south = Math.min(south, track.latitudes[i]);
+            west = Math.min(west, track.longitudes[i]);
+            north = Math.max(north, track.latitudes[i]);
+            east = Math.max(east, track.longitudes[i]);
         }
-        return kept;
+        if (!Number.isFinite(south)) return 0;
+        return haversineKm(south, west, north, east);
+    }
+
+    function automaticPlaceLimit(track) {
+        const minimum = Math.max(1, Math.floor(CONFIG.minAutoPlaces));
+        const maximum = Math.max(minimum, Math.floor(CONFIG.maxAutoPlaces));
+        const spacingKm = Math.max(1, Number(CONFIG.autoPlaceSpacingKm));
+        return Math.max(
+            minimum,
+            Math.min(maximum, Math.round(routeMapExtentKm(track) / spacingKm)),
+        );
+    }
+
+    function projectedRunPoint(run, track, referenceLat) {
+        const fallbackIndex = Math.max(
+            0,
+            Math.min(track.latitudes.length - 1, Math.round(run.orderIndex)),
+        );
+        const lat = Number.isFinite(run.lat) ? run.lat : track.latitudes[fallbackIndex];
+        const lon = Number.isFinite(run.lon) ? run.lon : track.longitudes[fallbackIndex];
+        return {
+            x: lon * 111.32 * Math.cos(referenceLat * Math.PI / 180),
+            y: lat * 110.57,
+        };
+    }
+
+    function convexHullArea(points) {
+        if (points.length < 3) return 0;
+        const sorted = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+        const cross = (origin, first, second) =>
+            (first.x - origin.x) * (second.y - origin.y)
+            - (first.y - origin.y) * (second.x - origin.x);
+        const lower = [];
+        for (const point of sorted) {
+            while (lower.length >= 2
+                && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+                lower.pop();
+            }
+            lower.push(point);
+        }
+        const upper = [];
+        for (let i = sorted.length - 1; i >= 0; i--) {
+            const point = sorted[i];
+            while (upper.length >= 2
+                && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+                upper.pop();
+            }
+            upper.push(point);
+        }
+        lower.pop();
+        upper.pop();
+        const hull = lower.concat(upper);
+        let twiceArea = 0;
+        for (let i = 0; i < hull.length; i++) {
+            const next = hull[(i + 1) % hull.length];
+            twiceArea += hull[i].x * next.y - next.x * hull[i].y;
+        }
+        return Math.abs(twiceArea) / 2;
+    }
+
+    function fillCoverageSelection(runs, track, candidateIndices, selected, targetSize) {
+        if (selected.size >= targetSize || candidateIndices.length === 0) return selected;
+        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
+            / track.latitudes.length;
+        const allIndices = Array.from(new Set([...selected, ...candidateIndices]));
+        const points = new Map(allIndices.map(index => [
+            index,
+            projectedRunPoint(runs[index], track, referenceLat),
+        ]));
+
+        while (selected.size < targetSize) {
+            const selectedPoints = Array.from(selected, index => points.get(index));
+            let bestIndex = -1;
+            let bestArea = -1;
+            let bestSpacingKm = -1;
+            let bestPriority = -1;
+            for (const index of candidateIndices) {
+                if (selected.has(index)) continue;
+                const point = points.get(index);
+                const area = convexHullArea(selectedPoints.concat(point));
+                const nearestSelectedKm = selectedPoints.length === 0 ? 0 : Math.min(
+                    ...selectedPoints.map(selectedPoint =>
+                        Math.hypot(point.x - selectedPoint.x, point.y - selectedPoint.y)),
+                );
+                const priority = runs[index].featureKind === 'road'
+                    ? ROAD_TYPE_PRIORITY[runs[index].roadType] || 0
+                    : 100;
+                if (area > bestArea + 1e-9
+                    || (Math.abs(area - bestArea) <= 1e-9
+                        && (nearestSelectedKm > bestSpacingKm + 1e-9
+                            || (Math.abs(nearestSelectedKm - bestSpacingKm) <= 1e-9
+                                && priority > bestPriority)))) {
+                    bestArea = area;
+                    bestSpacingKm = nearestSelectedKm;
+                    bestPriority = priority;
+                    bestIndex = index;
+                }
+            }
+            if (bestIndex < 0) break;
+            selected.add(bestIndex);
+        }
+        return selected;
+    }
+
+    function selectSingleCoverageIndex(runs, track, candidateIndices) {
+        if (candidateIndices.length === 0) return -1;
+        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
+            / track.latitudes.length;
+        const start = projectedRunPoint({
+            orderIndex: 0,
+            lat: track.latitudes[0],
+            lon: track.longitudes[0],
+        }, track, referenceLat);
+        const lastIndex = track.latitudes.length - 1;
+        const finish = projectedRunPoint({
+            orderIndex: lastIndex,
+            lat: track.latitudes[lastIndex],
+            lon: track.longitudes[lastIndex],
+        }, track, referenceLat);
+        let bestIndex = candidateIndices[0];
+        let bestEndpointSpacingKm = -1;
+        let bestPriority = -1;
+        for (const index of candidateIndices) {
+            const point = projectedRunPoint(runs[index], track, referenceLat);
+            const endpointSpacingKm = Math.min(
+                Math.hypot(point.x - start.x, point.y - start.y),
+                Math.hypot(point.x - finish.x, point.y - finish.y),
+            );
+            const priority = runs[index].featureKind === 'road'
+                ? ROAD_TYPE_PRIORITY[runs[index].roadType] || 0
+                : 100;
+            if (endpointSpacingKm > bestEndpointSpacingKm + 1e-9
+                || (Math.abs(endpointSpacingKm - bestEndpointSpacingKm) <= 1e-9
+                    && priority > bestPriority)) {
+                bestEndpointSpacingKm = endpointSpacingKm;
+                bestPriority = priority;
+                bestIndex = index;
+            }
+        }
+        return bestIndex;
+    }
+
+    // Settlements have absolute priority. Named roads fill only unused slots.
+    // Interior favorites occupy normal places in the limit; the first and last
+    // displayed route points do not consume it.
+    function compactRouteRuns(runs, track) {
+        const endpointIndices = new Set();
+        if (runs.length > 0) {
+            endpointIndices.add(0);
+            endpointIndices.add(runs.length - 1);
+        }
+        const interiorFavoriteCount = runs.reduce(
+            (count, run, index) =>
+                count + Number(run.favorite && !endpointIndices.has(index)),
+            0,
+        );
+        const automaticLimit = Math.max(
+            0,
+            automaticPlaceLimit(track) - interiorFavoriteCount,
+        );
+        const placeIndices = runs
+            .map((run, index) =>
+                !endpointIndices.has(index) && !run.favorite && run.featureKind === 'place'
+                    ? index
+                    : -1)
+            .filter(index => index >= 0);
+        const placeNames = new Set(placeIndices.map(index => runs[index].name));
+        const roadIndices = runs
+            .map((run, index) =>
+                !endpointIndices.has(index)
+                    && !run.favorite
+                    && run.featureKind === 'road'
+                    && !placeNames.has(run.name)
+                    ? index
+                    : -1)
+            .filter(index => index >= 0);
+        let selectedAutomatic;
+
+        if (automaticLimit === 0) {
+            selectedAutomatic = new Set();
+        } else if (placeIndices.length >= automaticLimit) {
+            selectedAutomatic = automaticLimit === 1
+                ? new Set([selectSingleCoverageIndex(runs, track, placeIndices)])
+                : new Set([
+                    placeIndices[0],
+                    placeIndices[placeIndices.length - 1],
+                ]);
+            selectedAutomatic = fillCoverageSelection(
+                runs,
+                track,
+                placeIndices,
+                selectedAutomatic,
+                automaticLimit,
+            );
+        } else {
+            selectedAutomatic = new Set(placeIndices);
+            if (selectedAutomatic.size === 0 && roadIndices.length > 0) {
+                if (automaticLimit === 1) {
+                    selectedAutomatic.add(selectSingleCoverageIndex(runs, track, roadIndices));
+                } else {
+                    selectedAutomatic.add(roadIndices[0]);
+                    selectedAutomatic.add(roadIndices[roadIndices.length - 1]);
+                }
+            }
+            selectedAutomatic = fillCoverageSelection(
+                runs,
+                track,
+                roadIndices,
+                selectedAutomatic,
+                Math.min(automaticLimit, placeIndices.length + roadIndices.length),
+            );
+        }
+        return runs
+            .filter((run, index) =>
+                endpointIndices.has(index) || run.favorite || selectedAutomatic.has(index))
+            .map(run => ({ ...run }));
     }
 
     function routeNamesFromPassages(passages, track, favorites, shouldLog = false) {
@@ -881,6 +1145,10 @@
                 toKm: passage.toKm,
                 favorite: Boolean(match),
                 orderIndex: match?.index ?? passage.anchor,
+                lat: match?.favorite.lat ?? passage.lat,
+                lon: match?.favorite.lon ?? passage.lon,
+                featureKind: match ? 'favorite' : passage.featureKind,
+                roadType: passage.roadType || null,
             });
         }
 
@@ -898,6 +1166,10 @@
                 toKm: visit.toKm,
                 favorite: true,
                 orderIndex: visit.index,
+                lat: visit.favorite.lat,
+                lon: visit.favorite.lon,
+                featureKind: 'favorite',
+                roadType: null,
             });
         }
 
@@ -910,12 +1182,28 @@
                 last.fromKm = Math.min(last.fromKm, event.fromKm);
                 last.toKm = Math.max(last.toKm, event.toKm);
                 last.favorite ||= event.favorite;
+                if (event.favorite) {
+                    last.featureKind = 'favorite';
+                } else if (event.featureKind === 'place' && last.featureKind === 'road') {
+                    last.featureKind = 'place';
+                }
             } else {
                 runs.push({ ...event });
             }
         }
 
-        const compacted = compactRouteRuns(runs);
+        const compacted = compactRouteRuns(runs, track);
+        if (shouldLog) {
+            const selectedPlaces = compacted.filter(run => !run.favorite
+                && run.featureKind === 'place').length;
+            const selectedRoads = compacted.filter(run => !run.favorite
+                && run.featureKind === 'road').length;
+            const selectedFavorites = compacted.filter(run => run.favorite).length;
+            log(`Map extent ${routeMapExtentKm(track).toFixed(1)} km: `
+                + `${selectedPlaces} settlements`
+                + (selectedRoads ? ` + ${selectedRoads} named-road fallbacks` : '')
+                + ` + ${selectedFavorites} favorites`);
+        }
         if (shouldLog && compacted.length < runs.length) {
             log(`Name compacted from ${runs.length} to ${compacted.length} places: `
                 + compacted.map(run => run.name).join(' - '));
@@ -923,29 +1211,18 @@
         return compacted.map(run => run.name);
     }
 
-    // Every continuous residential stretch contributes exactly one address in
-    // travel order. Favorites are also detected between residential stretches.
-    // Adjacent duplicates merge immediately; every later revisit remains visible.
-    async function routePlaceNames(ranges, track, geocoder, onProgress) {
-        const passages = [];
-        for (let i = 0; i < ranges.length; i++) {
-            onProgress?.(i + 1, ranges.length);
-            const range = ranges[i];
-            const lat = track.latitudes[range.anchor];
-            const lon = track.longitudes[range.anchor];
-            const exactGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimAddressZoom);
-            const coarseGeo = await geocoder.reverse(lat, lon, CONFIG.nominatimPlaceZoom);
-            const baseName = resolvePlaceName(exactGeo, coarseGeo);
-            const distanceLabel = `${range.fromKm.toFixed(2)}–${range.toKm.toFixed(2)} km`;
-            log(`Residential ${distanceLabel}: ${baseName || 'no settlement address'}`
-                + ` (zoom ${CONFIG.nominatimPlaceZoom}: ${coarseGeo?.name || 'none'})`);
-            passages.push({
-                ...range,
-                lat,
-                lon,
-                baseName,
-                address: formatAddress(exactGeo?.address),
-            });
+    // Settlement and road visits are already ordered by the closest GPX point.
+    // Adjacent duplicates merge immediately; a later revisit remains visible.
+    function routePlaceNames(passages, track) {
+        const placePassages = passages.filter(passage => passage.featureKind === 'place');
+        for (const passage of placePassages) {
+            const distanceLabel = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
+            log(`Nearby place ${distanceLabel}: ${passage.baseName}`
+                + ` (${passage.distanceM.toFixed(0)} m from OSM ${passage.placeType} node)`);
+        }
+        const roadPassageCount = passages.length - placePassages.length;
+        if (roadPassageCount > 0) {
+            log(`${roadPassageCount} named-road visits available as fallback`);
         }
 
         return {
@@ -1033,7 +1310,7 @@
 
     function promptFavorite(existing, passage) {
         const defaultName = existing?.name || passage?.baseName || passage?.address || '';
-        const enteredName = window.prompt('Custom name for this address:', defaultName);
+        const enteredName = window.prompt('Custom name for this place:', defaultName);
         if (enteredName === null) return null;
         const name = enteredName.trim().replace(/\s+/g, ' ');
         if (!name || name.length > 80) {
@@ -1360,7 +1637,7 @@
         }
 
         const routeTitle = document.createElement('h4');
-        routeTitle.textContent = 'Addresses on this route';
+        routeTitle.textContent = 'Route landmarks';
         routeTitle.style.margin = '20px 0 4px';
         panel.append(routeTitle);
 
@@ -1423,31 +1700,24 @@
             }
             log(`${track.totalKm.toFixed(1)} km, ${track.latitudes.length} trackpoints`);
 
-            setButtonState(button, `${STRINGS.landuse}...`, 'loading');
-            const residential = await loadResidentialRanges(
+            setButtonState(button, `${STRINGS.places}...`, 'loading');
+            const routeFeatures = await loadRoutePassages(
                 activityId,
                 track,
                 delay => setButtonState(
                     button, `${STRINGS.overpassBusy} ${Math.ceil(delay / 1000)}s...`, 'loading'),
             );
-            log(`${residential.ranges.length} crossed residential stretches`
-                + (residential.cached ? ' (cached)' : ` from ${residential.areaCount} OSM areas`));
+            log(`${routeFeatures.passages.length} route landmark visits`
+                + (routeFeatures.cached ? ' (cached)' : ` from ${routeFeatures.placeCount} OSM places`
+                    + ` and ${routeFeatures.roadCount} named roads`));
 
-            setButtonState(button, `${STRINGS.geocoding}...`, 'loading');
-            const geocoder = createGeocoder();
-            const route = await routePlaceNames(
-                residential.ranges,
-                track,
-                geocoder,
-                (done, total) => setButtonState(
-                    button, `${STRINGS.geocoding} ${done}/${total}...`, 'loading'),
-            );
+            const route = routePlaceNames(routeFeatures.passages, track);
             lastRouteAnalysis = { activityId, track, passages: route.passages };
             if (route.names.length === 0) {
-                throw new Error('The route does not enter a named residential area or favorite radius.');
+                throw new Error('The route has no named OSM place, road, or favorite radius.');
             }
             const newName = route.names.join(' - ');
-            log(`${residential.ranges.length} residential addresses, ${geocoder.apiCalls} API calls`);
+            log(`${routeFeatures.passages.length} route landmark visits`);
             log(`Name: ${newName}`);
 
             setActivityName(route.names);
