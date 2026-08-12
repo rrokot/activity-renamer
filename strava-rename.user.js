@@ -80,30 +80,42 @@
     // Inline styles used to beat Strava's own CSS for free; class rules do not,
     // so dialog rules are scoped under the overlay and the two buttons that sit
     // inside Strava's form repeat their class to outweigh the page.
+    //
+    // Colours, radii and spacing are Strava's own design tokens, declared on
+    // :root by the page, so the dialog follows the site instead of guessing at
+    // it. They are used without a var() fallback: if Strava ever renames one,
+    // the affected rule drops out rather than silently drifting out of date.
     const STYLE_ID = 'strava-route-styles';
     const STYLES = `
 .strava-route-button.strava-route-button {
     flex: 0 0 auto;
     margin-left: auto;
-    padding: 3px 10px;
+    padding: var(--space-3xs) var(--space-2xs);
     font-size: 12px;
-    color: white;
+    color: var(--color-corewhite);
     vertical-align: middle;
-    background-color: #fc4c02;
+    background-color: var(--color-coreo3);
     border: none;
-    border-radius: 3px;
+    border-radius: var(--border-radius-sm);
     cursor: pointer;
 }
-.strava-route-button.strava-route-button:hover[data-state="idle"] { background-color: #e34402; }
-.strava-route-button.strava-route-button[data-state="loading"] { background-color: #888; }
-.strava-route-button.strava-route-button[data-state="success"] { background-color: #4caf50; }
-.strava-route-button.strava-route-button[data-state="error"] { background-color: #f44336; }
+.strava-route-button.strava-route-button:hover[data-state="idle"] {
+    background-color: var(--color-extendedorangeo2);
+}
+.strava-route-button.strava-route-button[data-state="loading"] {
+    background-color: var(--color-extendedneutraln4);
+}
+.strava-route-button.strava-route-button[data-state="success"] {
+    background-color: var(--color-extendedgreeng2);
+}
+.strava-route-button.strava-route-button[data-state="error"] {
+    background-color: var(--color-extendedredr3);
+}
 .strava-route-button--secondary.strava-route-button--secondary {
-    margin-left: 6px;
-    padding: 3px 9px;
-    color: #fc4c02;
-    background-color: white;
-    border: 1px solid #fc4c02;
+    margin-left: var(--space-3xs);
+    color: var(--color-coreo3);
+    background-color: var(--color-corewhite);
+    border: var(--border-width-thin) solid var(--color-coreo3);
 }
 .strava-route-controls { display: flex; align-items: center; }
 .strava-route-overlay {
@@ -113,111 +125,129 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: var(--space-md);
     background: rgba(0, 0, 0, 0.45);
 }
 .strava-route-overlay .strava-route-panel {
     width: min(680px, 100%);
     max-height: 85vh;
     overflow-y: auto;
-    padding: 18px;
-    color: #242428;
-    background: white;
-    border-radius: 8px;
+    padding: var(--space-md);
+    color: var(--color-extendedneutraln1);
+    background: var(--color-corewhite);
+    border-radius: var(--border-radius-md);
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
 }
 .strava-route-overlay .strava-route-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--space-xs);
 }
 .strava-route-overlay .strava-route-header h3 { margin: 0; }
-.strava-route-overlay .strava-route-panel h4 { margin: 20px 0 4px; }
+.strava-route-overlay .strava-route-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
 .strava-route-overlay .strava-route-panel h4.strava-route-first { margin-top: 0; }
-.strava-route-overlay .strava-route-note { margin: 0 0 8px; color: #666; font-size: 12px; }
+.strava-route-overlay .strava-route-note {
+    margin: 0 0 var(--space-2xs);
+    color: var(--color-extendedneutraln3);
+    font-size: 12px;
+}
 .strava-route-overlay .strava-route-dialog-button {
     flex: 0 0 auto;
-    padding: 5px 9px;
-    color: #242428;
-    background-color: #f3f3f3;
-    border: 1px solid #d5d5d5;
-    border-radius: 4px;
+    padding: var(--space-3xs) var(--space-2xs);
+    color: var(--color-extendedneutraln1);
+    background-color: var(--color-extendedneutraln6);
+    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
+    border-radius: var(--border-radius-sm);
     cursor: pointer;
 }
 .strava-route-overlay .strava-route-dialog-button--primary {
-    color: white;
-    background-color: #fc4c02;
+    color: var(--color-corewhite);
+    background-color: var(--color-coreo3);
+    border-color: var(--color-coreo3);
 }
 .strava-route-overlay .strava-route-dialog-button[disabled] { opacity: 0.5; cursor: default; }
 .strava-route-overlay .strava-route-field {
     flex: 1 1 auto;
     min-width: 0;
-    padding: 7px 9px;
-    color: #242428;
-    background: white;
-    border: 1px solid #d5d5d5;
-    border-radius: 4px;
+    padding: var(--space-2xs) var(--space-xs);
+    color: var(--color-extendedneutraln1);
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
+    border-radius: var(--border-radius-sm);
 }
 .strava-route-overlay .strava-route-field--narrow { flex: 0 0 130px; }
-.strava-route-overlay .strava-route-form { display: flex; align-items: center; gap: 8px; }
-.strava-route-overlay .strava-route-status { min-height: 18px; margin-top: 5px; color: #666; font-size: 12px; }
-.strava-route-overlay .strava-route-status--error { color: #f44336; }
+.strava-route-overlay .strava-route-form {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+}
+.strava-route-overlay .strava-route-status {
+    min-height: 18px;
+    margin-top: var(--space-4xs);
+    color: var(--color-extendedneutraln3);
+    font-size: 12px;
+}
+.strava-route-overlay .strava-route-status--error { color: var(--color-extendedredr3); }
 .strava-route-overlay .strava-route-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 0;
-    border-bottom: 1px solid #eee;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) 0;
+    border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--color-extendedneutraln6);
 }
 .strava-route-overlay .strava-route-row-text { flex: 1 1 auto; }
 .strava-route-overlay .strava-route-row-title { font-weight: 600; }
 .strava-route-overlay .strava-route-row-details {
-    margin-top: 2px;
-    color: #666;
+    margin-top: var(--space-4xs);
+    color: var(--color-extendedneutraln3);
     font-size: 12px;
     overflow-wrap: anywhere;
 }
-.strava-route-overlay .strava-route-row-actions { display: flex; gap: 6px; }
+.strava-route-overlay .strava-route-row-actions { display: flex; gap: var(--space-3xs); }
 .strava-route-overlay .strava-route-editor {
-    margin: 0 0 16px;
-    padding: 12px;
-    background: #fff7f3;
-    border: 1px solid #fc4c02;
-    border-radius: 6px;
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-xs);
+    background: var(--color-extendedneutraln7);
+    border: var(--border-width-thin) solid var(--color-coreo3);
+    border-radius: var(--border-radius-md);
 }
-.strava-route-overlay .strava-route-editor h4 { margin: 0 0 4px; }
+.strava-route-overlay .strava-route-editor h4 { margin: 0 0 var(--space-3xs); }
 .strava-route-overlay .strava-route-preview {
-    margin: 10px 0 16px;
-    padding: 10px 12px;
-    background: #f7f7f7;
-    border-left: 3px solid #fc4c02;
-    border-radius: 4px;
+    margin: var(--space-2xs) 0 var(--space-sm);
+    padding: var(--space-2xs) var(--space-xs);
+    background: var(--color-extendedneutraln7);
+    border-left: var(--divider-size-md) var(--divider-variant-solid) var(--color-coreo3);
+    border-radius: var(--border-radius-sm);
 }
 .strava-route-overlay .strava-route-preview-label {
-    color: #666;
+    color: var(--color-extendedneutraln3);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
 .strava-route-overlay .strava-route-preview-value {
-    margin-top: 3px;
+    margin-top: var(--space-4xs);
     font-weight: 600;
     overflow-wrap: anywhere;
 }
-.strava-route-overlay .strava-route-preview-value--empty { color: #666; }
+.strava-route-overlay .strava-route-preview-value--empty { color: var(--color-extendedneutraln3); }
 .strava-route-overlay .strava-route-backup {
     width: 100%;
     box-sizing: border-box;
-    padding: 7px 9px;
-    color: #242428;
-    background: white;
-    border: 1px solid #d5d5d5;
-    border-radius: 4px;
+    padding: var(--space-2xs) var(--space-xs);
+    color: var(--color-extendedneutraln1);
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
+    border-radius: var(--border-radius-sm);
     font-family: monospace;
     font-size: 12px;
 }
-.strava-route-overlay .strava-route-attribution { margin: 4px 0 18px; color: #888; font-size: 11px; }
+.strava-route-overlay .strava-route-attribution {
+    margin: var(--space-3xs) 0 var(--space-sm);
+    color: var(--color-extendedneutraln4);
+    font-size: 11px;
+}
 `;
 
     function installStyles() {
