@@ -73,18 +73,176 @@
         blockedNames: 'strava_route_blocked_names_v1',
         pinnedNames: 'strava_route_pinned_names_v1',
     };
+    // One stylesheet instead of a style object per element. It is adopted
+    // through the CSSOM rather than injected as a <style> tag, because a
+    // page's style-src policy can drop the tag but never reaches constructed
+    // sheets — the same reason the network calls go through the manager.
+    // Inline styles used to beat Strava's own CSS for free; class rules do not,
+    // so dialog rules are scoped under the overlay and the two buttons that sit
+    // inside Strava's form repeat their class to outweigh the page.
+    const STYLE_ID = 'strava-route-styles';
+    const STYLES = `
+.strava-route-button.strava-route-button {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: white;
+    vertical-align: middle;
+    background-color: #fc4c02;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.strava-route-button.strava-route-button:hover[data-state="idle"] { background-color: #e34402; }
+.strava-route-button.strava-route-button[data-state="loading"] { background-color: #888; }
+.strava-route-button.strava-route-button[data-state="success"] { background-color: #4caf50; }
+.strava-route-button.strava-route-button[data-state="error"] { background-color: #f44336; }
+.strava-route-button--secondary.strava-route-button--secondary {
+    margin-left: 6px;
+    padding: 3px 9px;
+    color: #fc4c02;
+    background-color: white;
+    border: 1px solid #fc4c02;
+}
+.strava-route-controls { display: flex; align-items: center; }
+.strava-route-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.45);
+}
+.strava-route-overlay .strava-route-panel {
+    width: min(680px, 100%);
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 18px;
+    color: #242428;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
+}
+.strava-route-overlay .strava-route-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.strava-route-overlay .strava-route-header h3 { margin: 0; }
+.strava-route-overlay .strava-route-panel h4 { margin: 20px 0 4px; }
+.strava-route-overlay .strava-route-panel h4.strava-route-first { margin-top: 0; }
+.strava-route-overlay .strava-route-note { margin: 0 0 8px; color: #666; font-size: 12px; }
+.strava-route-overlay .strava-route-dialog-button {
+    flex: 0 0 auto;
+    padding: 5px 9px;
+    color: #242428;
+    background-color: #f3f3f3;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.strava-route-overlay .strava-route-dialog-button--primary {
+    color: white;
+    background-color: #fc4c02;
+}
+.strava-route-overlay .strava-route-dialog-button[disabled] { opacity: 0.5; cursor: default; }
+.strava-route-overlay .strava-route-field {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 9px;
+    color: #242428;
+    background: white;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+}
+.strava-route-overlay .strava-route-field--narrow { flex: 0 0 130px; }
+.strava-route-overlay .strava-route-form { display: flex; align-items: center; gap: 8px; }
+.strava-route-overlay .strava-route-status { min-height: 18px; margin-top: 5px; color: #666; font-size: 12px; }
+.strava-route-overlay .strava-route-status--error { color: #f44336; }
+.strava-route-overlay .strava-route-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}
+.strava-route-overlay .strava-route-row-text { flex: 1 1 auto; }
+.strava-route-overlay .strava-route-row-title { font-weight: 600; }
+.strava-route-overlay .strava-route-row-details {
+    margin-top: 2px;
+    color: #666;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.strava-route-overlay .strava-route-row-actions { display: flex; gap: 6px; }
+.strava-route-overlay .strava-route-editor {
+    margin: 0 0 16px;
+    padding: 12px;
+    background: #fff7f3;
+    border: 1px solid #fc4c02;
+    border-radius: 6px;
+}
+.strava-route-overlay .strava-route-editor h4 { margin: 0 0 4px; }
+.strava-route-overlay .strava-route-preview {
+    margin: 10px 0 16px;
+    padding: 10px 12px;
+    background: #f7f7f7;
+    border-left: 3px solid #fc4c02;
+    border-radius: 4px;
+}
+.strava-route-overlay .strava-route-preview-label {
+    color: #666;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.strava-route-overlay .strava-route-preview-value {
+    margin-top: 3px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+.strava-route-overlay .strava-route-preview-value--empty { color: #666; }
+.strava-route-overlay .strava-route-backup {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 9px;
+    color: #242428;
+    background: white;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 12px;
+}
+.strava-route-overlay .strava-route-attribution { margin: 4px 0 18px; color: #888; font-size: 11px; }
+`;
+
+    function installStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+        if (typeof CSSStyleSheet === 'function' && Array.isArray(document.adoptedStyleSheets)) {
+            try {
+                const sheet = new CSSStyleSheet();
+                sheet.replaceSync(STYLES);
+                document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+                return;
+            } catch {
+                // Older engines reject constructed sheets; fall back to a tag.
+            }
+        }
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = STYLES;
+        (document.head || document.documentElement).append(style);
+    }
+
     const BUTTON_ID = 'strava-route-rename-btn';
     const FAVORITES_BUTTON_ID = 'strava-route-favorites-btn';
     const FAVORITES_DIALOG_ID = 'strava-route-favorites-dialog';
     const LOG_PREFIX = '[Strava Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
-    const BUTTON_COLORS = {
-        idle: '#fc4c02',
-        hover: '#e34402',
-        loading: '#888',
-        success: '#4caf50',
-        error: '#f44336',
-    };
     let lastRouteAnalysis = null;
     let lastNominatimCallAt = 0;
     let nominatimQueue = Promise.resolve();
@@ -354,11 +512,11 @@
         };
     }
 
+    // The colour of every state, hover included, is a stylesheet rule keyed on
+    // this attribute.
     function setButtonState(button, text, state = 'idle') {
         button.textContent = text;
         button.dataset.state = state;
-        button.style.backgroundColor = BUTTON_COLORS[state] || BUTTON_COLORS.idle;
-        button.style.color = 'white';
     }
 
     // Every planar measurement in the script shares one flat projection, fixed
@@ -1638,82 +1796,42 @@
         }
     }
 
+    function createElement(tagName, className, properties = {}) {
+        const element = document.createElement(tagName);
+        element.className = className;
+        Object.assign(element, properties);
+        return element;
+    }
+
     function createDialogButton(text, primary = false) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = text;
-        Object.assign(button.style, {
-            flex: '0 0 auto',
-            padding: '5px 9px',
-            color: primary ? 'white' : '#242428',
-            backgroundColor: primary ? BUTTON_COLORS.idle : '#f3f3f3',
-            border: '1px solid #d5d5d5',
-            borderRadius: '4px',
-            cursor: 'pointer',
-        });
-        return button;
+        return createElement(
+            'button',
+            `strava-route-dialog-button${primary ? ' strava-route-dialog-button--primary' : ''}`,
+            { type: 'button', textContent: text },
+        );
     }
 
     function createDialogInput(properties = {}) {
-        const input = document.createElement('input');
-        input.type = 'text';
-        Object.assign(input, properties);
-        Object.assign(input.style, {
-            flex: '1 1 auto',
-            minWidth: '0',
-            padding: '7px 9px',
-            color: '#242428',
-            background: 'white',
-            border: '1px solid #d5d5d5',
-            borderRadius: '4px',
-        });
-        return input;
+        return createElement('input', 'strava-route-field', { type: 'text', ...properties });
     }
 
-    function createSectionTitle(text, leading = '20px') {
-        const title = document.createElement('h4');
-        title.textContent = text;
-        title.style.margin = `${leading} 0 4px`;
-        return title;
+    function createSectionTitle(text, first = false) {
+        return createElement('h4', first ? 'strava-route-first' : '', { textContent: text });
     }
 
     function createDialogNote(text) {
-        const note = document.createElement('p');
-        note.textContent = text;
-        Object.assign(note.style, { margin: '0 0 8px', color: '#666', fontSize: '12px' });
-        return note;
+        return createElement('p', 'strava-route-note', { textContent: text });
     }
 
     function appendFavoriteRow(container, title, details, actions) {
-        const row = document.createElement('div');
-        Object.assign(row.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            padding: '8px 0',
-            borderBottom: '1px solid #eee',
-        });
+        const row = createElement('div', 'strava-route-row');
+        const text = createElement('div', 'strava-route-row-text');
+        text.append(
+            createElement('div', 'strava-route-row-title', { textContent: title }),
+            createElement('div', 'strava-route-row-details', { textContent: details }),
+        );
 
-        const text = document.createElement('div');
-        text.style.flex = '1 1 auto';
-        const heading = document.createElement('div');
-        heading.textContent = title;
-        heading.style.fontWeight = '600';
-        const description = document.createElement('div');
-        description.textContent = details;
-        Object.assign(description.style, {
-            marginTop: '2px',
-            color: '#666',
-            fontSize: '12px',
-            overflowWrap: 'anywhere',
-        });
-        text.append(heading, description);
-
-        const controls = document.createElement('div');
-        Object.assign(controls.style, {
-            display: 'flex',
-            gap: '6px',
-        });
+        const controls = createElement('div', 'strava-route-row-actions');
         controls.append(...actions);
         row.append(text, controls);
         container.append(row);
@@ -1725,18 +1843,8 @@
     function appendFavoriteEditor(panel, state, render) {
         const editing = state.editing;
         const target = editing.existing || editing.passage;
-        const section = document.createElement('div');
-        Object.assign(section.style, {
-            margin: '0 0 16px',
-            padding: '12px',
-            background: '#fff7f3',
-            border: `1px solid ${BUTTON_COLORS.idle}`,
-            borderRadius: '6px',
-        });
-
-        const title = createSectionTitle(
-            editing.existing ? 'Edit favorite' : 'New favorite', '0');
-        title.style.margin = '0 0 4px';
+        const section = createElement('div', 'strava-route-editor');
+        const title = createSectionTitle(editing.existing ? 'Edit favorite' : 'New favorite');
 
         const nameInput = createDialogInput({
             id: 'strava-route-favorite-name-input',
@@ -1750,10 +1858,10 @@
 
         const radiusInput = createDialogInput({
             id: 'strava-route-favorite-radius-input',
+            className: 'strava-route-field strava-route-field--narrow',
             value: state.editing.radiusM,
             placeholder: `Radius ${CONFIG.favoriteRadiusMinM}–${CONFIG.favoriteRadiusMaxM} m`,
         });
-        Object.assign(radiusInput.style, { flex: '0 0 130px' });
         radiusInput.addEventListener('input', () => {
             state.editing.radiusM = radiusInput.value;
         });
@@ -1765,8 +1873,7 @@
             render();
         });
 
-        const form = document.createElement('form');
-        Object.assign(form.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+        const form = createElement('form', 'strava-route-form');
         form.append(nameInput, radiusInput, saveButton, cancelButton);
         saveButton.type = 'submit';
         form.addEventListener('submit', event => {
@@ -1786,30 +1893,32 @@
             }
         });
 
-        const status = document.createElement('div');
-        status.setAttribute('aria-live', 'polite');
-        status.textContent = state.editing.error
-            || `Applies whenever the route comes within the radius of ${
-                target?.address || target?.baseName || 'this place'}.`;
-        Object.assign(status.style, {
-            marginTop: '6px',
-            color: state.editing.error ? BUTTON_COLORS.error : '#666',
-            fontSize: '12px',
-        });
+        const status = createStatusLine(
+            state.editing.error
+                || `Applies whenever the route comes within the radius of ${
+                    target?.address || target?.baseName || 'this place'}.`,
+            Boolean(state.editing.error),
+        );
 
         section.append(title, form, status);
         panel.append(section);
     }
 
-    function appendManualFavoriteSearch(panel, state, render) {
-        const title = createSectionTitle('Add by address', '0');
+    // Every section reports itself the same way: one polite live region that
+    // turns red when what it says is a problem.
+    function createStatusLine(text, isError = false) {
+        const status = createElement(
+            'div',
+            `strava-route-status${isError ? ' strava-route-status--error' : ''}`,
+            { textContent: text },
+        );
+        status.setAttribute('aria-live', 'polite');
+        return status;
+    }
 
-        const form = document.createElement('form');
-        Object.assign(form.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-        });
+    function appendManualFavoriteSearch(panel, state, render) {
+        const title = createSectionTitle('Add by address', true);
+        const form = createElement('form', 'strava-route-form');
 
         const input = createDialogInput({
             id: 'strava-route-favorite-address-input',
@@ -1828,16 +1937,7 @@
         input.disabled = state.search.busy;
         form.append(input, searchButton);
 
-        const status = document.createElement('div');
-        status.setAttribute('aria-live', 'polite');
-        status.textContent = state.search.status;
-        Object.assign(status.style, {
-            minHeight: '18px',
-            marginTop: '5px',
-            color: state.search.error ? BUTTON_COLORS.error : '#666',
-            fontSize: '12px',
-        });
-
+        const status = createStatusLine(state.search.status, state.search.error);
         const results = document.createElement('div');
         for (const candidate of state.search.candidates) {
             const addButton = createDialogButton('☆ Add', true);
@@ -1887,12 +1987,7 @@
             });
         });
 
-        const attribution = document.createElement('div');
-        Object.assign(attribution.style, {
-            margin: '4px 0 18px',
-            color: '#888',
-            fontSize: '11px',
-        });
+        const attribution = createElement('div', 'strava-route-attribution');
         attribution.append('Search by Nominatim · © ');
         const attributionLink = document.createElement('a');
         attributionLink.href = 'https://www.openstreetmap.org/copyright';
@@ -1945,36 +2040,17 @@
 
         const note = createDialogNote('Copy this somewhere safe, or paste a backup and import it.');
 
-        const textarea = document.createElement('textarea');
-        textarea.id = 'strava-route-backup-input';
-        textarea.rows = 5;
-        textarea.spellcheck = false;
-        textarea.value = state.backup.text ?? JSON.stringify(backupPayload(), null, 2);
+        const textarea = createElement('textarea', 'strava-route-backup', {
+            id: 'strava-route-backup-input',
+            rows: 5,
+            spellcheck: false,
+            value: state.backup.text ?? JSON.stringify(backupPayload(), null, 2),
+        });
         textarea.addEventListener('input', () => {
             state.backup.text = textarea.value;
         });
-        Object.assign(textarea.style, {
-            width: '100%',
-            boxSizing: 'border-box',
-            padding: '7px 9px',
-            color: '#242428',
-            background: 'white',
-            border: '1px solid #d5d5d5',
-            borderRadius: '4px',
-            fontFamily: 'monospace',
-            fontSize: '12px',
-        });
 
-        const status = document.createElement('div');
-        status.setAttribute('aria-live', 'polite');
-        status.textContent = state.backup.status;
-        Object.assign(status.style, {
-            minHeight: '18px',
-            marginTop: '5px',
-            color: '#666',
-            fontSize: '12px',
-        });
-
+        const status = createStatusLine(state.backup.status);
         const copyButton = createDialogButton('Copy');
         copyButton.addEventListener('click', () => {
             navigator.clipboard?.writeText(textarea.value);
@@ -2000,8 +2076,7 @@
             render();
         }));
 
-        const controls = document.createElement('div');
-        Object.assign(controls.style, { display: 'flex', gap: '6px', marginTop: '6px' });
+        const controls = createElement('div', 'strava-route-row-actions');
         controls.append(copyButton, importButton);
 
         panel.append(title, note, textarea, controls, status);
@@ -2010,30 +2085,10 @@
     function openFavoritesDialog() {
         document.getElementById(FAVORITES_DIALOG_ID)?.remove();
 
-        const overlay = document.createElement('div');
-        overlay.id = FAVORITES_DIALOG_ID;
-        Object.assign(overlay.style, {
-            position: 'fixed',
-            inset: '0',
-            zIndex: '10000',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '20px',
-            background: 'rgba(0, 0, 0, 0.45)',
+        const overlay = createElement('div', 'strava-route-overlay', {
+            id: FAVORITES_DIALOG_ID,
         });
-
-        const panel = document.createElement('div');
-        Object.assign(panel.style, {
-            width: 'min(680px, 100%)',
-            maxHeight: '85vh',
-            overflowY: 'auto',
-            padding: '18px',
-            color: '#242428',
-            background: 'white',
-            borderRadius: '8px',
-            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.3)',
-        });
+        const panel = createElement('div', 'strava-route-panel');
 
         const close = () => {
             document.removeEventListener('keydown', onKeyDown);
@@ -2074,19 +2129,13 @@
     }
 
     function appendDialogHeader(panel, close) {
-        const header = document.createElement('div');
-        Object.assign(header.style, {
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
-        });
-        const title = document.createElement('h3');
-        title.textContent = 'Route names';
-        title.style.margin = '0';
+        const header = createElement('div', 'strava-route-header');
         const closeButton = createDialogButton('Close');
         closeButton.addEventListener('click', close);
-        header.append(title, closeButton);
+        header.append(
+            createElement('h3', '', { textContent: 'Route names' }),
+            closeButton,
+        );
         panel.append(header);
     }
 
@@ -2094,42 +2143,25 @@
     // makes the effect of a click obvious while the dialog covers the page.
     function appendNamePreview(panel) {
         const names = currentRouteNames();
-        const box = document.createElement('div');
-        Object.assign(box.style, {
-            margin: '10px 0 16px',
-            padding: '10px 12px',
-            background: '#f7f7f7',
-            borderLeft: `3px solid ${BUTTON_COLORS.idle}`,
-            borderRadius: '4px',
-        });
-
-        const label = document.createElement('div');
-        label.textContent = 'Name preview';
-        Object.assign(label.style, {
-            color: '#666',
-            fontSize: '11px',
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em',
-        });
-
-        const value = document.createElement('div');
-        value.id = 'strava-route-name-preview';
-        value.textContent = names?.join(' - ')
-            || 'Generate the name first, then adjust it here.';
-        Object.assign(value.style, {
-            marginTop: '3px',
-            fontWeight: '600',
-            overflowWrap: 'anywhere',
-            color: names ? '#242428' : '#666',
-        });
-
-        box.append(label, value);
+        const box = createElement('div', 'strava-route-preview');
+        box.append(
+            createElement('div', 'strava-route-preview-label', { textContent: 'Name preview' }),
+            createElement(
+                'div',
+                `strava-route-preview-value${names ? '' : ' strava-route-preview-value--empty'}`,
+                {
+                    id: 'strava-route-name-preview',
+                    textContent: names?.join(' - ')
+                        || 'Generate the name first, then adjust it here.',
+                },
+            ),
+        );
         panel.append(box);
     }
 
     function appendSavedFavorites(panel, state, render) {
         const favorites = loadFavorites();
-        panel.append(createSectionTitle(`Saved places (${favorites.length})`, '0'));
+        panel.append(createSectionTitle(`Saved places (${favorites.length})`));
         if (favorites.length === 0) {
             panel.append(createDialogNote('No favorite places yet.'));
             return;
@@ -2326,60 +2358,30 @@
         const titleLabel = document.querySelector('label[for="activity_name"]');
         if (!titleLabel?.parentNode) return false;
 
-        const button = document.createElement('button');
-        button.id = BUTTON_ID;
-        button.type = 'button';
-        button.title = 'Generate name from GPS track';
-        Object.assign(button.style, {
-            marginLeft: 'auto',
-            verticalAlign: 'middle',
-            fontSize: '12px',
-            padding: '3px 10px',
-            color: 'white',
-            border: 'none',
-            borderRadius: '3px',
-            cursor: 'pointer',
+        installStyles();
+
+        const button = createElement('button', 'strava-route-button', {
+            id: BUTTON_ID,
+            type: 'button',
+            title: 'Generate name from GPS track',
         });
         setButtonState(button, STRINGS.idle);
-        button.addEventListener('mouseenter', () => {
-            if (button.dataset.state === 'idle') {
-                button.style.backgroundColor = BUTTON_COLORS.hover;
-            }
-        });
-        button.addEventListener('mouseleave', () => {
-            if (button.dataset.state === 'idle') {
-                button.style.backgroundColor = BUTTON_COLORS.idle;
-            }
-        });
         button.addEventListener('click', event => {
             event.preventDefault();
             void generateAndFillName(button);
         });
 
-        const favoritesButton = document.createElement('button');
-        favoritesButton.id = FAVORITES_BUTTON_ID;
-        favoritesButton.type = 'button';
-        Object.assign(favoritesButton.style, {
-            marginLeft: '6px',
-            verticalAlign: 'middle',
-            fontSize: '12px',
-            padding: '3px 9px',
-            color: BUTTON_COLORS.idle,
-            backgroundColor: 'white',
-            border: `1px solid ${BUTTON_COLORS.idle}`,
-            borderRadius: '3px',
-            cursor: 'pointer',
-        });
+        const favoritesButton = createElement(
+            'button',
+            'strava-route-button strava-route-button--secondary',
+            { id: FAVORITES_BUTTON_ID, type: 'button' },
+        );
         favoritesButton.addEventListener('click', event => {
             event.preventDefault();
             runFavoriteAction(openFavoritesDialog);
         });
 
-        const wrapper = document.createElement('div');
-        Object.assign(wrapper.style, {
-            display: 'flex',
-            alignItems: 'center',
-        });
+        const wrapper = createElement('div', 'strava-route-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
         wrapper.append(titleLabel, button, favoritesButton);
         runFavoriteAction(updateFavoritesButtonLabel);

@@ -257,6 +257,25 @@ test('keeps the title within the length Strava accepts', async () => {
     assert.match(name, / - Cottbus an der Spree im Oberspreewald$/, 'the finish survives');
 });
 
+// A page's style-src can drop an injected <style> tag, but never reaches a
+// constructed sheet — the same reason the network calls avoid page fetch.
+test('adopts its stylesheet through the CSSOM when it can', () => {
+    const renamer = loadRenamer({ constructedStylesheets: true });
+
+    assert.equal(renamer.document.adoptedStyleSheets.length, 1);
+    assert.match(renamer.document.adoptedStyleSheets[0].cssText, /\.strava-route-panel/);
+    assert.equal(renamer.byId('strava-route-styles'), null, 'no <style> tag is needed');
+});
+
+test('falls back to a style tag on engines without constructed sheets', () => {
+    const renamer = loadRenamer();
+    const style = renamer.byId('strava-route-styles');
+
+    assert.ok(style, 'the stylesheet is installed');
+    assert.match(style.textContent, /\.strava-route-panel/);
+    assert.equal(style.parentNode, renamer.document.head);
+});
+
 test('stops watching the whole page once the button is in', () => {
     const renamer = loadRenamer();
 

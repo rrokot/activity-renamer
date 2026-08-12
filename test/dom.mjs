@@ -173,8 +173,11 @@ class FakeDocument extends FakeElement {
     constructor() {
         super('#document', null);
         this.ownerDocument = this;
+        this.documentElement = new FakeElement('html', this);
+        this.head = new FakeElement('head', this);
         this.body = new FakeElement('body', this);
-        this.append(this.body);
+        this.append(this.documentElement);
+        this.documentElement.append(this.head, this.body);
     }
 
     createElement(tagName) {

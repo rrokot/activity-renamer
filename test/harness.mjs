@@ -170,6 +170,7 @@ export function loadRenamer(options = {}) {
     const userscriptStore = new Map(Object.entries(options.userscriptStorage || {}));
     const clipboard = [];
     const { document, input, label } = createEditPageDocument();
+    if (options.constructedStylesheets) document.adoptedStyleSheets = [];
 
     const respond = async (url, init, transport) => {
         requests.push({ url, init, transport });
@@ -248,6 +249,15 @@ export function loadRenamer(options = {}) {
             : undefined,
         GM_setValue: options.userscriptManager
             ? (key, value) => void userscriptStore.set(key, value)
+            : undefined,
+        // Constructed stylesheets are the CSP-proof path; without them the
+        // script must fall back to a <style> tag.
+        CSSStyleSheet: options.constructedStylesheets
+            ? class CSSStyleSheet {
+                replaceSync(css) {
+                    this.cssText = css;
+                }
+            }
             : undefined,
         navigator: { clipboard: { writeText: text => void clipboard.push(String(text)) } },
         alert: message => alerts.push(String(message)),
