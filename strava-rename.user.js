@@ -273,6 +273,23 @@
     const FAVORITES_DIALOG_ID = 'strava-route-favorites-dialog';
     const LOG_PREFIX = '[Strava Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
+
+    // The OSM place ranks worth naming a route after: anything smaller is a
+    // hamlet or a farm the rider would not call a destination.
+    const PLACE_NODE_TYPES = ['city', 'town', 'village'];
+
+    const ROAD_TYPE_PRIORITY = {
+        motorway: 8,
+        trunk: 7,
+        primary: 6,
+        secondary: 5,
+        tertiary: 4,
+        unclassified: 3,
+        residential: 2,
+        living_street: 1,
+        cycleway: 1,
+    };
+
     let lastRouteAnalysis = null;
     let lastNominatimCallAt = 0;
     let nominatimQueue = Promise.resolve();
@@ -668,6 +685,7 @@
     function namingConfigSignature() {
         return CACHE_RELEVANT_CONFIG
             .map(key => `${key}=${CONFIG[key]}`)
+            .concat(`placeTypes=${PLACE_NODE_TYPES.join('+')}`)
             .concat(`roadTypes=${Object.keys(ROAD_TYPE_PRIORITY).join('+')}`)
             .join(',');
     }
@@ -704,9 +722,10 @@
             .map(point => `${point.lat.toFixed(6)},${point.lon.toFixed(6)}`).join(',');
         return `[out:json][timeout:${Math.ceil(CONFIG.overpassTimeoutMs / 1000)}];\n`
             + '(\n'
-            + `node["place"~"^(city|town|village)$"](around:${placeRadiusM},${line});\n`
-            + 'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|'
-            + `residential|living_street|cycleway)$"]["name"](around:${roadRadiusM},${line});\n`
+            + `node["place"~"^(${PLACE_NODE_TYPES.join('|')})$"]`
+            + `(around:${placeRadiusM},${line});\n`
+            + `way["highway"~"^(${Object.keys(ROAD_TYPE_PRIORITY).join('|')})$"]["name"]`
+            + `(around:${roadRadiusM},${line});\n`
             + ');\n'
             + 'out body geom;';
     }
@@ -822,7 +841,7 @@
             const rawName = element?.tags?.['name:de'] || element?.tags?.name;
             if (element?.type !== 'node'
                 || !Number.isFinite(lat) || !Number.isFinite(lon)
-                || !['city', 'town', 'village'].includes(placeType)
+                || !PLACE_NODE_TYPES.includes(placeType)
                 || typeof rawName !== 'string' || !rawName.trim()) {
                 continue;
             }
@@ -836,18 +855,6 @@
         }
         return places;
     }
-
-    const ROAD_TYPE_PRIORITY = {
-        motorway: 8,
-        trunk: 7,
-        primary: 6,
-        secondary: 5,
-        tertiary: 4,
-        unclassified: 3,
-        residential: 2,
-        living_street: 1,
-        cycleway: 1,
-    };
 
     function parseNamedRoads(elements) {
         const roadsByName = new Map();
@@ -1104,7 +1111,7 @@
         if (!commonIsValid) return false;
         if (passage.featureKind === 'place') {
             return typeof passage.placeId === 'string'
-                && ['city', 'town', 'village'].includes(passage.placeType);
+                && PLACE_NODE_TYPES.includes(passage.placeType);
         }
         if (passage.featureKind === 'road') {
             return typeof passage.roadId === 'string'
@@ -2364,11 +2371,11 @@
             if (route.names.length === 0) {
                 throw new Error('The route has no named OSM place, road, or favorite radius.');
             }
-            const newName = route.names.join(' - ');
-            log(`${routeFeatures.passages.length} route landmark visits`);
-            log(`Name: ${newName}`);
 
+            // Logged after the fact: an over-long narrative reaches the field
+            // shortened, and the log should show what was actually written.
             setActivityName(route.names);
+            log(`Name: ${fitNameLength(route.names)}`);
             setButtonState(button, STRINGS.done, 'success');
             await sleep(CONFIG.successStateMs);
         } catch (error) {

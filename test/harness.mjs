@@ -143,15 +143,13 @@ export function loadRenamer(options = {}) {
         overpassResponses = [jsonResponse({ elements: [] })],
         nominatimResponses = [jsonResponse([])],
         storage = {},
-        // Modal prompts block the page and cannot show what is being edited;
-        // the dialog does all of that inline now, so a call here is a bug.
-        prompt = () => {
-            throw new Error('window.prompt must not be used');
-        },
-        confirm = () => {
-            throw new Error('window.confirm must not be used');
-        },
     } = options;
+
+    // Modal prompts block the page and cannot show what is being edited; the
+    // dialog does all of that inline now, so reaching for one is a bug.
+    const refuseModal = name => () => {
+        throw new Error(`window.${name} must not be used`);
+    };
 
     const logs = [];
     const warnings = [];
@@ -263,8 +261,8 @@ export function loadRenamer(options = {}) {
         alert: message => alerts.push(String(message)),
         window: {
             location: { pathname: `/activities/${activityId}/edit`, href: '' },
-            prompt,
-            confirm,
+            prompt: refuseModal('prompt'),
+            confirm: refuseModal('confirm'),
         },
     };
     sandbox.window.alert = sandbox.alert;
