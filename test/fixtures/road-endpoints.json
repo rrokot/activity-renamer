@@ -1,0 +1,33 @@
+{
+    "activityId": "19000955533",
+    "description": "A ride that begins and ends on a named street. The street the route merely started on must not become the first word of the name.",
+    "expected": "Sielow - Werben",
+    "stepM": 15,
+    "places": [
+        { "id": 240090442, "name": "Sielow - Žylow", "place": "village", "lat": 51.793, "lon": 14.287 },
+        { "id": 240090447, "name": "Werben - Wjerbno", "place": "village", "lat": 51.838, "lon": 14.256 }
+    ],
+    "roads": [
+        {
+            "id": 41000010,
+            "name": "Bahnhofstraße",
+            "highway": "residential",
+            "geometry": [[51.79, 14.296], [51.7915, 14.2915]]
+        },
+        {
+            "id": 41000011,
+            "name": "Werbener Weg",
+            "highway": "residential",
+            "geometry": [[51.8395, 14.26], [51.841, 14.264]]
+        }
+    ],
+    "waypoints": [
+        [51.79, 14.296],
+        [51.7915, 14.2915],
+        [51.7932, 14.2872],
+        [51.82, 14.27],
+        [51.8375, 14.2565],
+        [51.8395, 14.26],
+        [51.841, 14.264]
+    ]
+}

@@ -1,0 +1,10 @@
+{
+    "name": "strava-rename",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Tests for the Strava Activity Route Renamer userscript",
+    "type": "module",
+    "scripts": {
+        "test": "node --test \"test/*.test.mjs\""
+    }
+}

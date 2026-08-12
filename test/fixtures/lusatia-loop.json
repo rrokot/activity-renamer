@@ -1,0 +1,30 @@
+{
+    "activityId": "19000955530",
+    "description": "Cottbus loop through the Spreewald villages. Schmogrow is skirted at ~900 m and must not appear; Sielow is passed twice and must appear twice.",
+    "expected": "Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus",
+    "stepM": 20,
+    "places": [
+        { "id": 240090441, "name": "Cottbus - Chóśebuz", "place": "city", "lat": 51.7563, "lon": 14.3329 },
+        { "id": 240090442, "name": "Sielow - Žylow", "place": "village", "lat": 51.793, "lon": 14.287 },
+        { "id": 240090443, "name": "Guhrow - Górow", "place": "village", "lat": 51.856, "lon": 14.221 },
+        { "id": 240090444, "name": "Burg (Spreewald)", "place": "village", "lat": 51.85, "lon": 14.145 },
+        { "id": 240090445, "name": "Dissen - Dešno", "place": "village", "lat": 51.808, "lon": 14.235 },
+        { "id": 240090446, "name": "Schmogrow - Smogorjow", "place": "village", "lat": 51.883, "lon": 14.22 }
+    ],
+    "waypoints": [
+        [51.757, 14.332],
+        [51.775, 14.305],
+        [51.7925, 14.2875],
+        [51.82, 14.26],
+        [51.8555, 14.2215],
+        [51.8749, 14.22],
+        [51.87, 14.18],
+        [51.8505, 14.1455],
+        [51.83, 14.19],
+        [51.8085, 14.2345],
+        [51.8, 14.26],
+        [51.7935, 14.2865],
+        [51.775, 14.31],
+        [51.7565, 14.3325]
+    ]
+}
