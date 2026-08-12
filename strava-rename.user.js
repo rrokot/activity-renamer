@@ -33,6 +33,9 @@
         maxAutoPlaces: 7,
         autoPlaceSpacingKm: 4,
         favoriteRadiusM: 200,
+        favoriteRadiusMinM: 10,
+        favoriteRadiusMaxM: 5000,
+        maxPlaceNameLength: 80,
         maxNameLength: 200,
         stripPlaceParentheticals: true,
         nominatimIntervalMs: 1050,
@@ -227,16 +230,28 @@
         log(`Moved ${key} into userscript storage`);
     }
 
+    // The single gate every favorite passes, whether it comes from the form, a
+    // pasted backup or an older version of the script.
+    function isUsableRadius(radiusM) {
+        return Number.isFinite(radiusM)
+            && radiusM >= CONFIG.favoriteRadiusMinM
+            && radiusM <= CONFIG.favoriteRadiusMaxM;
+    }
+
+    function isUsablePlaceName(name) {
+        return Boolean(name) && name.length <= CONFIG.maxPlaceNameLength;
+    }
+
     function normalizeFavorite(value) {
         if (!value || typeof value !== 'object') return null;
         const name = typeof value.name === 'string' ? value.name.trim().replace(/\s+/g, ' ') : '';
         const lat = Number(value.lat);
         const lon = Number(value.lon);
         const radiusM = Number(value.radiusM);
-        if (!value.id || !name || name.length > 80
+        if (!value.id || !isUsablePlaceName(name)
             || !Number.isFinite(lat) || lat < -90 || lat > 90
             || !Number.isFinite(lon) || lon < -180 || lon > 180
-            || !Number.isFinite(radiusM) || radiusM < 10 || radiusM > 5000) {
+            || !isUsableRadius(radiusM)) {
             return null;
         }
         return {
@@ -272,7 +287,7 @@
     function normalizeBlockedName(value) {
         if (typeof value !== 'string') return null;
         const name = value.trim().replace(/\s+/g, ' ');
-        return name && name.length <= 80 ? name : null;
+        return isUsablePlaceName(name) ? name : null;
     }
 
     function normalizeBlockedNames(values) {
@@ -346,6 +361,28 @@
         button.style.color = 'white';
     }
 
+    // Every planar measurement in the script shares one flat projection, fixed
+    // at the ride's mean latitude. Projecting each point at its own latitude
+    // instead made two measurements of the same distance disagree.
+    const KM_PER_DEGREE_LAT = 110.57;
+    const KM_PER_DEGREE_LON = 111.32;
+
+    function flatProjection(referenceLat) {
+        const kx = Math.max(1, KM_PER_DEGREE_LON * Math.cos(referenceLat * Math.PI / 180));
+        return {
+            kx,
+            ky: KM_PER_DEGREE_LAT,
+            x: lon => lon * kx,
+            y: lat => lat * KM_PER_DEGREE_LAT,
+        };
+    }
+
+    function trackProjection(track) {
+        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
+            / track.latitudes.length;
+        return flatProjection(referenceLat);
+    }
+
     function haversineKm(lat1, lon1, lat2, lon2) {
         const earthRadiusKm = 6371;
         const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -371,11 +408,9 @@
             };
         }
 
-        const refLat = track.latitudes.reduce((sum, lat) => sum + lat, 0) / n;
-        const kx = 111.32 * Math.cos(refLat * Math.PI / 180);
-        const ky = 110.57;
-        const xs = track.longitudes.map(lon => lon * kx);
-        const ys = track.latitudes.map(lat => lat * ky);
+        const projection = trackProjection(track);
+        const xs = track.longitudes.map(projection.x);
+        const ys = track.latitudes.map(projection.y);
 
         const indicesAt = toleranceKm => {
             const keep = new Uint8Array(n);
@@ -715,14 +750,11 @@
     const trackGrids = new WeakMap();
 
     function buildTrackGrid(track) {
-        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
-            / track.latitudes.length;
-        const kx = Math.max(1, 111.32 * Math.cos(referenceLat * Math.PI / 180));
-        const ky = 110.57;
+        const projection = trackProjection(track);
         const cells = new Map();
         for (let index = 0; index < track.latitudes.length; index++) {
-            const cellX = Math.floor(track.longitudes[index] * kx / TRACK_GRID_CELL_KM);
-            const cellY = Math.floor(track.latitudes[index] * ky / TRACK_GRID_CELL_KM);
+            const cellX = Math.floor(projection.x(track.longitudes[index]) / TRACK_GRID_CELL_KM);
+            const cellY = Math.floor(projection.y(track.latitudes[index]) / TRACK_GRID_CELL_KM);
             const key = `${cellX}:${cellY}`;
             const bucket = cells.get(key);
             if (bucket) {
@@ -731,7 +763,7 @@
                 cells.set(key, [index]);
             }
         }
-        return { kx, ky, cells };
+        return { projection, cells };
     }
 
     function trackGrid(track) {
@@ -743,8 +775,8 @@
         return grid;
     }
 
-    // The grid is a coarse filter only: the box is widened so that rounding in
-    // the flat projection can never drop a point the exact test would keep.
+    // The grid is a coarse filter: it yields every track point in the projected
+    // box, and the caller applies the exact test.
     function* trackPointsInBox(grid, minX, minY, maxX, maxY) {
         const fromX = Math.floor(minX / TRACK_GRID_CELL_KM);
         const toX = Math.floor(maxX / TRACK_GRID_CELL_KM);
@@ -758,15 +790,17 @@
         }
     }
 
-    function gridMarginKm(radiusKm) {
-        return radiusKm * 0.05 + 0.02;
-    }
+    // A place is measured with haversine but filtered on the flat grid, and the
+    // two disagree slightly; the box is widened by more than that difference
+    // can ever be at ride scale. Road matching needs no such slack: it is
+    // planar on both sides.
+    const GRID_HAVERSINE_SLACK_KM = 0.02;
 
     function trackDistancesToPoint(track, lat, lon, radiusM) {
         const grid = trackGrid(track);
-        const reachKm = radiusM / 1000 + gridMarginKm(radiusM / 1000);
-        const x = lon * grid.kx;
-        const y = lat * grid.ky;
+        const reachKm = radiusM / 1000 * 1.05 + GRID_HAVERSINE_SLACK_KM;
+        const x = grid.projection.x(lon);
+        const y = grid.projection.y(lat);
         const distances = new Map();
         for (const index of trackPointsInBox(
             grid, x - reachKm, y - reachKm, x + reachKm, y + reachKm)) {
@@ -800,13 +834,11 @@
             .sort(byTrackOrder);
     }
 
-    function pointSegmentDistanceKm(lat, lon, first, second) {
-        const kx = 111.32 * Math.cos(lat * Math.PI / 180);
-        const ky = 110.57;
-        const ax = (first.lon - lon) * kx;
-        const ay = (first.lat - lat) * ky;
-        const bx = (second.lon - lon) * kx;
-        const by = (second.lat - lat) * ky;
+    function pointSegmentDistanceKm(projection, lat, lon, first, second) {
+        const ax = (first.lon - lon) * projection.kx;
+        const ay = (first.lat - lat) * projection.ky;
+        const bx = (second.lon - lon) * projection.kx;
+        const by = (second.lat - lat) * projection.ky;
         const dx = bx - ax;
         const dy = by - ay;
         const lengthSquared = dx * dx + dy * dy;
@@ -820,24 +852,24 @@
     function trackDistancesToRoad(track, road, radiusM) {
         const grid = trackGrid(track);
         const radiusKm = radiusM / 1000;
-        const reachKm = radiusKm + gridMarginKm(radiusKm);
         const distances = new Map();
         for (const geometry of road.geometries) {
             for (let i = 1; i < geometry.length; i++) {
                 const first = geometry[i - 1];
                 const second = geometry[i];
-                const firstX = first.lon * grid.kx;
-                const firstY = first.lat * grid.ky;
-                const secondX = second.lon * grid.kx;
-                const secondY = second.lat * grid.ky;
+                const firstX = grid.projection.x(first.lon);
+                const firstY = grid.projection.y(first.lat);
+                const secondX = grid.projection.x(second.lon);
+                const secondY = grid.projection.y(second.lat);
                 for (const index of trackPointsInBox(
                     grid,
-                    Math.min(firstX, secondX) - reachKm,
-                    Math.min(firstY, secondY) - reachKm,
-                    Math.max(firstX, secondX) + reachKm,
-                    Math.max(firstY, secondY) + reachKm,
+                    Math.min(firstX, secondX) - radiusKm,
+                    Math.min(firstY, secondY) - radiusKm,
+                    Math.max(firstX, secondX) + radiusKm,
+                    Math.max(firstY, secondY) + radiusKm,
                 )) {
                     const distanceKm = pointSegmentDistanceKm(
+                        grid.projection,
                         track.latitudes[index],
                         track.longitudes[index],
                         first,
@@ -960,22 +992,20 @@
     }
 
     // Nominatim address fields are used only to suggest a readable default
-    // when the user searches for a custom favorite.
+    // when the user searches for a custom favorite. Route names come from OSM
+    // place nodes, never from reverse geocoding.
     const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
     const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
-    const RURAL_PARENT_FIELDS = ['village', 'town'];
-    const SETTLEMENT_TYPES = new Set(['hamlet', 'village', 'town', 'city']);
 
-    function addressPlaceNames(address, fields) {
-        if (!address) return [];
-        const names = [];
+    function addressPlaceName(address, fields) {
+        if (!address) return null;
         for (const field of fields) {
             if (typeof address[field] !== 'string' || !address[field].trim()) continue;
             const name = cleanPlaceName(address[field]);
-            if (name && !names.includes(name)) names.push(name);
+            if (name) return name;
         }
-        return names;
+        return null;
     }
 
     function cleanOptionalPlaceName(value) {
@@ -999,39 +1029,12 @@
         return parts.join(', ');
     }
 
-    function resolvePlaceName(exactGeo, coarseGeo) {
-        const address = exactGeo?.address || {};
-        const localSettlementName = addressPlaceNames(address, LOCAL_SETTLEMENT_FIELDS)[0] || null;
-        const primaryNames = addressPlaceNames(address, PRIMARY_ADDRESS_FIELDS);
-        const districtNames = addressPlaceNames(address, DISTRICT_ADDRESS_FIELDS);
-        const primaryName = primaryNames[0] || null;
-        const districtName = districtNames[0] || null;
-        const preferredExactName = localSettlementName || districtName || primaryName;
-        const coarseName = cleanOptionalPlaceName(coarseGeo?.name);
-        const coarseIsRelation = coarseGeo?.osmType === 'relation';
-
-        // A confirmed city must not hide a more specific settlement or district.
-        if (coarseName && primaryNames.includes(coarseName)) return preferredExactName;
-
-        // Settlement relations identify the containing place directly.
-        if (coarseName && coarseIsRelation && SETTLEMENT_TYPES.has(coarseGeo.addressType)) {
-            return coarseName;
-        }
-
-        // Nominatim labels both urban and rural districts as suburb relations.
-        const isMatchingDistrictBoundary = coarseName && coarseIsRelation
-            && coarseGeo.addressType === 'suburb' && districtNames.includes(coarseName);
-        if (isMatchingDistrictBoundary) {
-            if (address.city) return localSettlementName || coarseName;
-
-            const ruralParent = addressPlaceNames(address, RURAL_PARENT_FIELDS)[0] || null;
-            const municipality = cleanOptionalPlaceName(address.municipality);
-            if (ruralParent && municipality && ruralParent === municipality) return ruralParent;
-            return coarseName;
-        }
-
-        // A nearby unrelated place node must not override the exact hierarchy.
-        return preferredExactName;
+    // The most specific settlement wins: a village before its district, a
+    // district before the city it belongs to.
+    function suggestedPlaceName(address) {
+        return addressPlaceName(address, LOCAL_SETTLEMENT_FIELDS)
+            || addressPlaceName(address, DISTRICT_ADDRESS_FIELDS)
+            || addressPlaceName(address, PRIMARY_ADDRESS_FIELDS);
     }
 
     function favoriteCandidateFromSearchResult(result) {
@@ -1045,7 +1048,7 @@
 
         const resultName = cleanOptionalPlaceName(result.name);
         const meaningfulResultName = resultName && !/^\d+[a-z]?$/i.test(resultName) ? resultName : null;
-        const placeName = resolvePlaceName({ address: result.address }, null);
+        const placeName = suggestedPlaceName(result.address);
         return {
             lat,
             lon,
@@ -1138,17 +1141,14 @@
         );
     }
 
-    function projectedRunPoint(run, track, referenceLat) {
+    function projectedRunPoint(run, track, projection) {
         const fallbackIndex = Math.max(
             0,
             Math.min(track.latitudes.length - 1, Math.round(run.orderIndex)),
         );
         const lat = Number.isFinite(run.lat) ? run.lat : track.latitudes[fallbackIndex];
         const lon = Number.isFinite(run.lon) ? run.lon : track.longitudes[fallbackIndex];
-        return {
-            x: lon * 111.32 * Math.cos(referenceLat * Math.PI / 180),
-            y: lat * 110.57,
-        };
+        return { x: projection.x(lon), y: projection.y(lat) };
     }
 
     function convexHullArea(points) {
@@ -1187,12 +1187,11 @@
 
     function fillCoverageSelection(runs, track, candidateIndices, selected, targetSize) {
         if (selected.size >= targetSize || candidateIndices.length === 0) return selected;
-        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
-            / track.latitudes.length;
+        const projection = trackProjection(track);
         const allIndices = Array.from(new Set([...selected, ...candidateIndices]));
         const points = new Map(allIndices.map(index => [
             index,
-            projectedRunPoint(runs[index], track, referenceLat),
+            projectedRunPoint(runs[index], track, projection),
         ]));
 
         while (selected.size < targetSize) {
@@ -1231,24 +1230,23 @@
 
     function selectSingleCoverageIndex(runs, track, candidateIndices) {
         if (candidateIndices.length === 0) return -1;
-        const referenceLat = track.latitudes.reduce((sum, lat) => sum + lat, 0)
-            / track.latitudes.length;
+        const projection = trackProjection(track);
         const start = projectedRunPoint({
             orderIndex: 0,
             lat: track.latitudes[0],
             lon: track.longitudes[0],
-        }, track, referenceLat);
+        }, track, projection);
         const lastIndex = track.latitudes.length - 1;
         const finish = projectedRunPoint({
             orderIndex: lastIndex,
             lat: track.latitudes[lastIndex],
             lon: track.longitudes[lastIndex],
-        }, track, referenceLat);
+        }, track, projection);
         let bestIndex = candidateIndices[0];
         let bestEndpointSpacingKm = -1;
         let bestPriority = -1;
         for (const index of candidateIndices) {
-            const point = projectedRunPoint(runs[index], track, referenceLat);
+            const point = projectedRunPoint(runs[index], track, projection);
             const endpointSpacingKm = Math.min(
                 Math.hypot(point.x - start.x, point.y - start.y),
                 Math.hypot(point.x - finish.x, point.y - finish.y),
@@ -1591,12 +1589,13 @@
 
     function favoriteFromForm(existing, passage, name, radiusText) {
         const trimmedName = name.trim().replace(/\s+/g, ' ');
-        if (!trimmedName || trimmedName.length > 80) {
-            throw new Error('The name must be 1–80 characters long.');
+        if (!isUsablePlaceName(trimmedName)) {
+            throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
         }
         const radiusM = Number(String(radiusText).replace(',', '.'));
-        if (!Number.isFinite(radiusM) || radiusM < 10 || radiusM > 5000) {
-            throw new Error('The radius must be a number from 10 to 5000 metres.');
+        if (!isUsableRadius(radiusM)) {
+            throw new Error(`The radius must be a number from ${CONFIG.favoriteRadiusMinM}`
+                + ` to ${CONFIG.favoriteRadiusMaxM} metres.`);
         }
 
         const favorite = normalizeFavorite({
@@ -1743,7 +1742,7 @@
             id: 'strava-route-favorite-name-input',
             value: state.editing.name,
             placeholder: 'Name to use in the title',
-            maxLength: 80,
+            maxLength: CONFIG.maxPlaceNameLength,
         });
         nameInput.addEventListener('input', () => {
             state.editing.name = nameInput.value;
@@ -1752,7 +1751,7 @@
         const radiusInput = createDialogInput({
             id: 'strava-route-favorite-radius-input',
             value: state.editing.radiusM,
-            placeholder: 'Radius in metres',
+            placeholder: `Radius ${CONFIG.favoriteRadiusMinM}–${CONFIG.favoriteRadiusMaxM} m`,
         });
         Object.assign(radiusInput.style, { flex: '0 0 130px' });
         radiusInput.addEventListener('input', () => {
