@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.12
+// @version      0.1.13
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -2259,12 +2259,6 @@
         return decorateIconButton(createPanelButton(label, primary), icon, label);
     }
 
-    function createSectionTitle(text, icon = null) {
-        const title = createElement('h4', '', { textContent: text });
-        if (icon) title.append(createSectionIcon(icon));
-        return title;
-    }
-
     function createPanelNote(text) {
         return createElement('p', 'activity-renamer-note', { textContent: text });
     }
@@ -2298,8 +2292,9 @@
         if (!editing) return;
         const target = editing.existing || editing.passage;
         const section = createElement('div', 'activity-renamer-editor');
-        const title = createSectionTitle(
-            editing.existing ? 'Rename this place' : 'Name this place');
+        const title = createElement('h4', '', {
+            textContent: editing.existing ? 'Rename this place' : 'Name this place',
+        });
 
         const nameInput = createPanelInput({
             id: 'activity-renamer-place-name-input',
@@ -2466,7 +2461,7 @@
         panel.append(note, controls, status, results, attribution);
     }
 
-    const COLLECTION_TAB_IDS = ['places', 'roads', 'favorites', 'never'];
+    const COLLECTION_TAB_IDS = ['places', 'roads', 'favorites', 'excluded'];
 
     function appendCollectionTab(panel, state, render, tablist, {
         id, label, icon, appendContents,
@@ -2518,9 +2513,9 @@
         });
     }
 
-    function appendNeverInName(panel, state, render, tablist) {
+    function appendExcluded(panel, state, render, tablist) {
         appendCollectionTab(panel, state, render, tablist, {
-            id: 'never',
+            id: 'excluded',
             label: 'Excluded',
             icon: 'excluded',
             appendContents: appendBlockedNameContents,
@@ -2533,10 +2528,10 @@
         tablist.setAttribute('role', 'tablist');
         tablist.setAttribute('aria-label', 'Landmark collections');
         panel.append(tablist);
-        appendAlsoPassed(panel, state, render, tablist);
-        appendRoads(panel, state, render, tablist);
+        appendOtherPlaces(panel, state, render, tablist);
+        appendOtherRoads(panel, state, render, tablist);
         appendFavorites(panel, state, render, tablist);
-        appendNeverInName(panel, state, render, tablist);
+        appendExcluded(panel, state, render, tablist);
     }
 
     const PANEL_SECTIONS = [appendThisName, appendCollectionSections];
@@ -2762,9 +2757,7 @@
             const value = Number(rawValue);
             if (!Number.isInteger(value) || value < minimum) {
                 if (reportInvalid) {
-                    state.countError = minimum > minimumNamePlaces()
-                        ? `This name has ${minimum} protected places. Enter ${minimum} or more.`
-                        : `Enter a whole number of ${minimum} or more.`;
+                    state.countError = `Enter a whole number of ${minimum} or more.`;
                     render(inputId);
                 }
                 return;
@@ -2852,7 +2845,7 @@
     // Settlements the route came near but the name does not mention: those the
     // automatic selection had no slot for, those taken out by hand, and those
     // the block list silences everywhere.
-    function appendAlsoPassed(panel, state, render, tablist) {
+    function appendOtherPlaces(panel, state, render, tablist) {
         const view = state.view;
         const inName = new Set(view?.names || []);
         const dropped = nameKeys(loadRideOverride().dropped);
@@ -2887,7 +2880,7 @@
         return Array.from(byName.values());
     }
 
-    function appendRoads(panel, state, render, tablist) {
+    function appendOtherRoads(panel, state, render, tablist) {
         const view = state.view;
         const inName = new Set(view?.names || []);
         const roads = uniqueLandmarksByName((view?.landmarks || []).filter(landmark =>

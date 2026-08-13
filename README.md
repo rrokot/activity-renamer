@@ -12,7 +12,7 @@ Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
 - Merges one continuous visit but preserves later revisits.
 - Prioritizes settlements; named roads fill gaps.
 - Selects geographically spread places and keeps the route ends.
-- Applies saved and manual choices; removes middle places if the title is too
+- Applies Favorites and manual choices; removes middle places if the title is too
   long.
 
 ## Installation

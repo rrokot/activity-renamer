@@ -43,7 +43,7 @@ test('keeps global settings available before the route name is built', async () 
     assert.equal(renamer.panel.querySelector('h3'), null);
     assert.equal(renamer.panel.getAttribute('aria-label'), 'Activity Renamer');
     assert.ok(renamer.panel.querySelector('#activity-renamer-favorites-tab'));
-    assert.ok(renamer.panel.querySelector('#activity-renamer-never-tab'));
+    assert.ok(renamer.panel.querySelector('#activity-renamer-excluded-tab'));
 
     await renamer.generate();
 

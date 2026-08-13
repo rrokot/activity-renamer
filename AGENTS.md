@@ -37,7 +37,7 @@ ignored for permissions.
 The script downloads the full-resolution GPX, simplifies it for the Overpass
 query, collects nearby settlements and named roads, converts feature proximity
 into ordered passages, and selects a bounded narrative. Settlements outrank
-roads. Start and finish settlements are protected, saved and manually added
+roads. Start and finish settlements are protected, Favorites and manually added
 places retain their slots, and genuine revisits remain in the result.
 
 Configuration lives in `CONFIG` near the top of the userscript. Settings that

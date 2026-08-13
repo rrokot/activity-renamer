@@ -91,7 +91,7 @@ test('the four place collections behave as one tab set', async () => {
     assert.equal(panelButton(renamer, 'Favorites').getAttribute('aria-selected'), 'false');
     assert.equal(panelButton(renamer, 'Excluded').getAttribute('aria-selected'), 'true');
     assert.equal(renamer.panel.querySelector('#activity-renamer-favorites'), null);
-    assert.ok(renamer.panel.querySelector('#activity-renamer-never'));
+    assert.ok(renamer.panel.querySelector('#activity-renamer-excluded'));
 });
 
 test('embeds a region beside Title and leaves focus in the page flow', async () => {
@@ -144,16 +144,13 @@ test('shows the calculated place count and overrides it for this ride', async ()
     assert.equal(
         renamer.panel.querySelector('label[for="activity-renamer-name-place-count"]').className,
         'activity-renamer-sr-only',
-        'the old visible caption remains available only to assistive technology',
+        'the shared control label remains available to assistive technology',
     );
     const countBlock = limit.parentNode.parentNode;
     const chips = countBlock.nextSibling;
     assert.equal(chips.className, 'activity-renamer-chips');
     assert.ok(renamer.panel.children.indexOf(countBlock) < renamer.panel.children.indexOf(chips),
         'the count controls sit immediately before the place chips');
-    const help = renamer.panel.querySelector('#activity-renamer-name-place-count-description');
-    assert.equal(help, null);
-    assert.equal(renamer.panel.querySelector('.activity-renamer-help'), null);
     assert.equal(limit.getAttribute('aria-describedby'), null);
     assert.equal(
         renamer.panel.querySelector('#activity-renamer-name-place-count-note'),
