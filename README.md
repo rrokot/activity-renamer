@@ -31,27 +31,49 @@ re-imported by hand after every change.
 4. **Selection** — `automaticPlaceLimit` derives the number of slots from the
    route's *map extent* (not its length). The first and last settlement are
    always kept — a street the ride merely started on is dropped rather than
-   promoted — favorites and pinned places never lose their slot, and the rest
-   goes to the settlements that spread widest over the map.
+   promoted — saved places and the places added to this ride by hand never lose
+   their slot, and the rest goes to the settlements that spread widest over the
+   map.
 
 Everything is tunable in the `CONFIG` block at the top of the script. Settings
 that change what gets cached are part of the cache signature, so editing one
 invalidates stale entries automatically.
 
-## The ★ dialog
+## The ✎ Adjust dialog
 
-Everything is edited inline, with a live preview of the resulting title:
+`✎ Adjust` sits next to the generate button and opens the name of the ride you
+are editing. It counts what you changed about that name by hand — `✎ Adjust
+(2)` on an activity you came back to — and nothing else: how many places are
+saved for every ride is not news about this one.
 
-- **Add by address** — Nominatim search; pick a result and give it a name.
-- **Saved places** — a custom name replaces the OSM name whenever the route
-  comes within the saved radius. Deleting asks once.
-- **Never in a name** — a blocked name is left out of every title (the suburb
-  you start in, a generic street name).
-- **Always in a name** — a pinned name is kept even when the automatic slots
-  run out. Pinning a blocked place unblocks it, and the other way round.
-- **Backup** — the JSON of everything above, to copy out or paste back in.
+The dialog is about one thing — the sentence in the title field — so that is
+what it opens with, and everything below it is a setting behind that name.
 
-Blocking, pinning, and editing a favorite rewrite the title immediately.
+- **This name** — the title as chips, one per part, in the order they are
+  written: `[Cottbus ✕] [Sielow ✕] [Guhrow ✕]`. The chip's label renames the
+  place, the ✕ takes it out of *this* ride. Under the chips stands the exact
+  string the field will hold, which is shorter than the chips when Strava's
+  length limit bites.
+- **Also passed** — everything the route came near that the name does not
+  mention: what the slots had no room for, what you took out by hand, and what
+  the block list silences. `⊕ Add` puts a place into this name, `★ Rename`
+  names it for every ride, `⛔ Never` silences it for every ride.
+- **Saved places** — a saved name replaces the OSM one whenever a route comes
+  within the radius, on every ride. Deleting asks once. The address search at
+  the bottom adds a place the route never passed.
+- **Never in a name** — the blocked names, and the way back.
+- **Backup** — the JSON of the saved places and blocked names. Per-ride edits
+  stay out of it.
+
+Two decisions belong to the ride being edited and to no other: **added** and
+**removed**. They are stored per activity id, they overrule the block list for
+that title only, and the store holds the last `rideHistory` rides. Saying the
+same thing about *every* ride is what a saved place and the block list are for.
+Taking a place out undoes whatever put it there — a place you added is
+un-added, a place the automatic choice picked is recorded as removed — so the
+✕ always restores the name you had before your own click.
+
+Every edit rewrites the title immediately.
 
 ## Tests
 

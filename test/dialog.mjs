@@ -3,7 +3,7 @@
 // way a user reads the dialog again after it changes.
 
 export function openDialog(renamer) {
-    renamer.favoritesButton.click();
+    renamer.adjustButton.click();
     return renamer.dialog;
 }
 
@@ -51,6 +51,37 @@ export function dialogText(renamer) {
     };
     visit(renamer.dialog);
     return parts.join(' | ');
+}
+
+// The section headings, top to bottom — the order the dialog reads in.
+export function sectionTitles(renamer) {
+    return renamer.dialog.querySelectorAll('h4').map(title => title.textContent);
+}
+
+// The name is edited as chips: the label renames the place, the ✕ takes it out.
+export function chipNames(renamer) {
+    return renamer.dialog.querySelectorAll('button')
+        .filter(button => button.className === 'strava-route-chip-name')
+        .map(button => button.textContent);
+}
+
+export function nameChip(renamer, name) {
+    const rename = renamer.dialog.querySelectorAll('button')
+        .find(button => button.className === 'strava-route-chip-name'
+            && button.textContent === name);
+    if (!rename) {
+        throw new Error(`No "${name}" chip in the name. Present: ${chipNames(renamer).join(', ')}`);
+    }
+    return { rename, drop: rename.parentNode.children[1] };
+}
+
+// A button in the "Also passed" row of a given place.
+export function passedRowButton(renamer, label, place) {
+    const button = renamer.dialog.querySelectorAll('button')
+        .filter(candidate => candidate.textContent === label)
+        .find(candidate => candidate.title.includes(place));
+    if (!button) throw new Error(`No "${label}" button for ${place}`);
+    return button;
 }
 
 export function namePreview(renamer) {

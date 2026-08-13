@@ -305,11 +305,11 @@ export function loadRenamer(options = {}) {
         get button() {
             return byId('strava-route-rename-btn');
         },
-        get favoritesButton() {
-            return byId('strava-route-favorites-btn');
+        get adjustButton() {
+            return byId('strava-route-adjust-btn');
         },
         get dialog() {
-            return byId('strava-route-favorites-dialog');
+            return byId('strava-route-name-dialog');
         },
         get name() {
             return input.value;

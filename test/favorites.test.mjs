@@ -3,10 +3,13 @@ import test from 'node:test';
 
 import {
     dialogButton,
+    chipNames,
     dialogField,
     dialogText,
+    nameChip,
     namePreview,
     openDialog,
+    sectionTitles,
     submitForm,
     typeInto,
 } from './dialog.mjs';
@@ -48,7 +51,6 @@ test('moves favorites out of localStorage on startup', () => {
     );
     assert.equal(renamer.localStorage.getItem(FAVORITES_KEY), null,
         'the site-data copy is gone, so clearing site data cannot lose them');
-    assert.equal(renamer.favoritesButton.textContent, '★ 1');
 });
 
 test('keeps working without the storage grants', async () => {
@@ -60,17 +62,34 @@ test('keeps working without the storage grants', async () => {
     assert.equal(renamer.userscriptStore.size, 0);
 });
 
-test('adds a favorite through the dialog instead of a prompt', async () => {
+// The dialog opens on the sentence it is about, then the places that could
+// join it, and only then the settings behind them.
+test('reads from this name down to the rarely touched settings', async () => {
+    const { renamer } = loadScenario('lusatia-loop', { userscriptManager: true });
+
+    await renamer.generate();
+    openDialog(renamer);
+
+    assert.deepEqual(sectionTitles(renamer), [
+        'This name (7)',
+        'Also passed (0)',
+        'Saved places (0)',
+        'Never in a name (0)',
+        'Backup',
+    ]);
+    assert.deepEqual(chipNames(renamer), renamer.name.split(' - '),
+        'one chip per part of the title, in the order they are written');
+});
+
+test('renames a place from its chip in the name', async () => {
     const fixture = loadFixture('lusatia-loop');
     const { renamer } = loadScenario('lusatia-loop', { userscriptManager: true });
 
     assert.equal(await renamer.generate(), fixture.expected);
     openDialog(renamer);
 
-    // The Burg landmark row offers to name the place.
-    const addButtons = renamer.dialog.querySelectorAll('button')
-        .filter(button => button.textContent === '☆ Add');
-    addButtons[2].click();
+    // The chip is the place: clicking its name is how it gets another one.
+    nameChip(renamer, 'Burg').rename.click();
 
     typeInto(dialogField(renamer, 'strava-route-favorite-name-input'), 'Gurkenpause');
     typeInto(dialogField(renamer, 'strava-route-favorite-radius-input'), '500');
@@ -80,14 +99,14 @@ test('adds a favorite through the dialog instead of a prompt', async () => {
     assert.match(renamer.name, /Gurkenpause/);
     assert.equal(namePreview(renamer), renamer.name, 'the preview mirrors the title');
     assert.equal(JSON.parse(renamer.userscriptStore.get(FAVORITES_KEY)).length, 1);
+    assert.ok(chipNames(renamer).includes('Gurkenpause'));
 });
 
 test('reports a bad radius in the form and keeps the values', async () => {
     const { renamer } = loadScenario('lusatia-loop', { userscriptManager: true });
     await renamer.generate();
     openDialog(renamer);
-    renamer.dialog.querySelectorAll('button')
-        .find(button => button.textContent === '☆ Add').click();
+    nameChip(renamer, 'Burg').rename.click();
 
     typeInto(dialogField(renamer, 'strava-route-favorite-name-input'), 'Zu weit');
     typeInto(dialogField(renamer, 'strava-route-favorite-radius-input'), '9000');
@@ -113,7 +132,6 @@ test('deletes a favorite only after a second click', () => {
     dialogButton(renamer, 'Confirm delete').click();
 
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(FAVORITES_KEY)), []);
-    assert.equal(renamer.favoritesButton.textContent, '☆');
 });
 
 test('offers the saved favorites as a JSON backup', () => {
@@ -144,7 +162,6 @@ test('imports a pasted backup after confirming', () => {
     dialogButton(renamer, 'Replace everything').click();
 
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(FAVORITES_KEY)), [burgFavorite]);
-    assert.equal(renamer.favoritesButton.textContent, '★ 1');
 });
 
 test('rejects a malformed backup without touching the saved favorites', () => {
@@ -181,7 +198,7 @@ test('searching an address offers it as a favorite candidate', async () => {
     assert.match(dialogText(renamer), /Bismarckturm/);
     assert.match(dialogText(renamer), /Found 1/);
 
-    dialogButton(renamer, '☆ Add').click();
+    dialogButton(renamer, '☆ Save').click();
     submitForm(dialogField(renamer, 'strava-route-favorite-name-input'));
 
     assert.equal(JSON.parse(renamer.localStorage.getItem(FAVORITES_KEY))[0].name, 'Bismarckturm');

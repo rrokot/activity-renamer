@@ -35,6 +35,7 @@
         favoriteRadiusM: 200,
         favoriteRadiusMinM: 10,
         favoriteRadiusMaxM: 5000,
+        rideHistory: 50,
         maxPlaceNameLength: 80,
         maxNameLength: 200,
         stripPlaceParentheticals: true,
@@ -53,6 +54,8 @@
         error: '❌ Error',
         noGps: 'No GPS data found (manual entry or indoor activity?)',
         noId: 'Could not detect activity ID from URL.',
+        adjust: '✎ Adjust',
+        adjustTitle: 'Adjust the generated name',
     };
 
     const API_URL = {
@@ -71,7 +74,7 @@
     const STORAGE_KEY = {
         favorites: 'strava_route_favorites_v1',
         blockedNames: 'strava_route_blocked_names_v1',
-        pinnedNames: 'strava_route_pinned_names_v1',
+        rideNames: 'strava_route_ride_names_v1',
     };
     // One stylesheet instead of a style object per element. It is adopted
     // through the CSSOM rather than injected as a <style> tag, because a
@@ -146,7 +149,8 @@
 }
 .strava-route-overlay .strava-route-header h3 { margin: 0; }
 .strava-route-overlay .strava-route-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
-.strava-route-overlay .strava-route-panel h4.strava-route-first { margin-top: 0; }
+/* Whichever section renders first opens flush with the preview above it. */
+.strava-route-overlay .strava-route-panel > h4:first-of-type { margin-top: 0; }
 .strava-route-overlay .strava-route-note {
     margin: 0 0 var(--space-2xs);
     color: var(--color-extendedneutraln3);
@@ -213,25 +217,46 @@
     border-radius: var(--border-radius-md);
 }
 .strava-route-overlay .strava-route-editor h4 { margin: 0 0 var(--space-3xs); }
-.strava-route-overlay .strava-route-preview {
-    margin: var(--space-2xs) 0 var(--space-sm);
-    padding: var(--space-2xs) var(--space-xs);
+/* The name is edited as the sentence it is: one chip per part, in order. */
+.strava-route-overlay .strava-route-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3xs);
+    margin: var(--space-2xs) 0;
+}
+.strava-route-overlay .strava-route-chip {
+    display: inline-flex;
+    align-items: stretch;
     background: var(--color-extendedneutraln7);
-    border-left: var(--divider-size-md) var(--divider-variant-solid) var(--color-coreo3);
+    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
     border-radius: var(--border-radius-sm);
+    overflow: hidden;
 }
-.strava-route-overlay .strava-route-preview-label {
+.strava-route-overlay .strava-route-chip button {
+    padding: var(--space-3xs) var(--space-2xs);
+    color: var(--color-extendedneutraln1);
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+.strava-route-overlay .strava-route-chip-name { font-weight: 600; }
+.strava-route-overlay .strava-route-chip button:hover { background: var(--color-extendedneutraln6); }
+.strava-route-overlay .strava-route-chip-drop {
+    padding-left: var(--space-3xs);
     color: var(--color-extendedneutraln3);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    border-left: var(--border-width-thin) solid var(--color-extendedneutraln5);
 }
+.strava-route-overlay .strava-route-chip-drop:hover { color: var(--color-extendedredr3); }
 .strava-route-overlay .strava-route-preview-value {
-    margin-top: var(--space-4xs);
-    font-weight: 600;
+    margin: 0 0 var(--space-sm);
+    padding-left: var(--space-2xs);
+    color: var(--color-extendedneutraln3);
+    border-left: var(--divider-size-md) var(--divider-variant-solid) var(--color-coreo3);
+    font-size: 12px;
     overflow-wrap: anywhere;
 }
-.strava-route-overlay .strava-route-preview-value--empty { color: var(--color-extendedneutraln3); }
+.strava-route-overlay .strava-route-preview-value--empty { font-style: italic; }
 .strava-route-overlay .strava-route-backup {
     width: 100%;
     box-sizing: border-box;
@@ -269,8 +294,8 @@
     }
 
     const BUTTON_ID = 'strava-route-rename-btn';
-    const FAVORITES_BUTTON_ID = 'strava-route-favorites-btn';
-    const FAVORITES_DIALOG_ID = 'strava-route-favorites-dialog';
+    const ADJUST_BUTTON_ID = 'strava-route-adjust-btn';
+    const NAME_DIALOG_ID = 'strava-route-name-dialog';
     const LOG_PREFIX = '[Strava Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
 
@@ -435,6 +460,12 @@
         log(`Moved ${key} into userscript storage`);
     }
 
+    // A name typed into a field, pasted in a backup or read from OSM reaches
+    // the same single-spaced shape.
+    function collapseWhitespace(value) {
+        return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+    }
+
     // The single gate every favorite passes, whether it comes from the form, a
     // pasted backup or an older version of the script.
     function isUsableRadius(radiusM) {
@@ -443,19 +474,23 @@
             && radiusM <= CONFIG.favoriteRadiusMaxM;
     }
 
+    function isUsableCoordinate(lat, lon) {
+        return Number.isFinite(lat) && lat >= -90 && lat <= 90
+            && Number.isFinite(lon) && lon >= -180 && lon <= 180;
+    }
+
     function isUsablePlaceName(name) {
         return Boolean(name) && name.length <= CONFIG.maxPlaceNameLength;
     }
 
     function normalizeFavorite(value) {
         if (!value || typeof value !== 'object') return null;
-        const name = typeof value.name === 'string' ? value.name.trim().replace(/\s+/g, ' ') : '';
+        const name = collapseWhitespace(value.name);
         const lat = Number(value.lat);
         const lon = Number(value.lon);
         const radiusM = Number(value.radiusM);
         if (!value.id || !isUsablePlaceName(name)
-            || !Number.isFinite(lat) || lat < -90 || lat > 90
-            || !Number.isFinite(lon) || lon < -180 || lon > 180
+            || !isUsableCoordinate(lat, lon)
             || !isUsableRadius(radiusM)) {
             return null;
         }
@@ -478,7 +513,6 @@
     function saveFavorites(favorites) {
         const normalized = favorites.map(normalizeFavorite).filter(Boolean);
         writeSetting(STORAGE_KEY.favorites, normalized);
-        updateFavoritesButtonLabel(normalized.length);
         return normalized;
     }
 
@@ -489,17 +523,17 @@
     // Some places sit on the route but never belong in its name: the suburb the
     // ride starts in, a hamlet whose land the road merely crosses. Blocking is
     // by name, so it also silences a generic road name wherever it turns up.
-    function normalizeBlockedName(value) {
-        if (typeof value !== 'string') return null;
-        const name = value.trim().replace(/\s+/g, ' ');
+    // Both name lists store the same shape and share this gate.
+    function normalizeListedName(value) {
+        const name = collapseWhitespace(value);
         return isUsablePlaceName(name) ? name : null;
     }
 
-    function normalizeBlockedNames(values) {
+    function normalizeListedNames(values) {
         const names = [];
         const seen = new Set();
         for (const value of Array.isArray(values) ? values : []) {
-            const name = normalizeBlockedName(value);
+            const name = normalizeListedName(value);
             const key = name?.toLocaleLowerCase();
             if (!name || seen.has(key)) continue;
             seen.add(key);
@@ -509,19 +543,16 @@
     }
 
     function loadNameList(key) {
-        return normalizeBlockedNames(readSetting(key));
+        return normalizeListedNames(readSetting(key));
     }
 
     function saveNameList(key, names) {
-        const normalized = normalizeBlockedNames(names);
+        const normalized = normalizeListedNames(names);
         writeSetting(key, normalized);
         return normalized;
     }
 
     const loadBlockedNames = () => loadNameList(STORAGE_KEY.blockedNames);
-    // A pinned place always makes it into the name, even when the automatic
-    // selection would have spent its slots elsewhere.
-    const loadPinnedNames = () => loadNameList(STORAGE_KEY.pinnedNames);
 
     function nameKeys(names) {
         return new Set(names.map(name => name.toLocaleLowerCase()));
@@ -531,31 +562,88 @@
         return keys.has(String(name).toLocaleLowerCase());
     }
 
-    // Blocking and pinning are opposites, so setting one clears the other.
-    function toggleNameList(key, name) {
-        const normalized = normalizeBlockedName(name);
+    // Two answers belong to the ride in front of the user and to no other: a
+    // place this name must contain, and a place this name is better off
+    // without. Saying either about every ride is what a favorite and the block
+    // list are for. The store keeps one entry per activity, and only for the
+    // rides whose names were last adjusted by hand.
+    const NO_RIDE_NAMES = { kept: [], dropped: [] };
+
+    function loadRideEntries() {
+        const stored = readSetting(STORAGE_KEY.rideNames);
+        if (!Array.isArray(stored)) return [];
+        return stored
+            .map(entry => ({
+                activityId: String(entry?.activityId ?? ''),
+                kept: normalizeListedNames(entry?.kept),
+                dropped: normalizeListedNames(entry?.dropped),
+            }))
+            .filter(entry =>
+                entry.activityId && (entry.kept.length > 0 || entry.dropped.length > 0));
+    }
+
+    function loadRideNames(activityId = getActivityId()) {
+        if (!activityId) return NO_RIDE_NAMES;
+        const entry = loadRideEntries().find(item => item.activityId === activityId);
+        return entry ? { kept: entry.kept, dropped: entry.dropped } : NO_RIDE_NAMES;
+    }
+
+    function saveRideNames(activityId, { kept, dropped }) {
+        const entries = loadRideEntries().filter(entry => entry.activityId !== activityId);
+        if (kept.length > 0 || dropped.length > 0) entries.push({ activityId, kept, dropped });
+        writeSetting(STORAGE_KEY.rideNames, entries.slice(-CONFIG.rideHistory));
+    }
+
+    const withoutName = (names, name) =>
+        names.filter(entry => entry.toLocaleLowerCase() !== name.toLocaleLowerCase());
+
+    // The same click adds and removes; only the store behind the list differs.
+    function withNameToggled(names, name) {
+        const without = withoutName(names, name);
+        return without.length === names.length ? names.concat(name) : without;
+    }
+
+    function toggleBlockedName(name) {
+        const normalized = normalizeListedName(name);
         if (!normalized) return false;
-        const listKey = normalized.toLocaleLowerCase();
-        const current = loadNameList(key);
-        const without = current.filter(entry => entry.toLocaleLowerCase() !== listKey);
-        const adding = without.length === current.length;
-        saveNameList(key, adding ? current.concat(normalized) : without);
-        if (adding) {
-            const otherKey = key === STORAGE_KEY.blockedNames
-                ? STORAGE_KEY.pinnedNames
-                : STORAGE_KEY.blockedNames;
-            saveNameList(otherKey, loadNameList(otherKey)
-                .filter(entry => entry.toLocaleLowerCase() !== listKey));
-        }
+        saveNameList(STORAGE_KEY.blockedNames,
+            withNameToggled(loadBlockedNames(), normalized));
         refreshActivityName();
         return true;
+    }
+
+    // Adding a place to this name and taking it out are opposite answers to one
+    // question, so setting either clears the other.
+    function toggleRideName(list, name) {
+        const activityId = getActivityId();
+        const normalized = normalizeListedName(name);
+        if (!activityId || !normalized) return false;
+        const other = list === 'kept' ? 'dropped' : 'kept';
+        const current = loadRideNames(activityId);
+        saveRideNames(activityId, {
+            [list]: withNameToggled(current[list], normalized),
+            [other]: withoutName(current[other], normalized),
+        });
+        refreshActivityName();
+        return true;
+    }
+
+    const keepInThisName = name => toggleRideName('kept', name);
+
+    // Taking a place out of the name undoes whatever put it there: a place the
+    // rider added is simply un-added, which restores the name they had before
+    // the click. Only a place the automatic choice picked has to be recorded as
+    // removed, or the next rewrite brings it straight back.
+    function dropFromThisName(name) {
+        const list = hasNameKey(name, nameKeys(loadRideNames().kept)) ? 'kept' : 'dropped';
+        return toggleRideName(list, name);
     }
 
     function namingPreferences() {
         return {
             favorites: loadFavorites(),
             blockedNames: loadBlockedNames(),
-            pinnedNames: loadPinnedNames(),
+            ...loadRideNames(),
         };
     }
 
@@ -832,17 +920,24 @@
         return cleaned.trim() || name;
     }
 
+    // German is the local language of the rides this was written for; the
+    // plain name is the fallback for everything the mapper tagged once.
+    function osmName(element) {
+        const rawName = element?.tags?.['name:de'] || element?.tags?.name;
+        return typeof rawName === 'string' && rawName.trim() ? rawName : null;
+    }
+
     function parsePlaceNodes(elements) {
         const places = [];
         for (const element of elements || []) {
             const lat = Number(element?.lat);
             const lon = Number(element?.lon);
             const placeType = element?.tags?.place;
-            const rawName = element?.tags?.['name:de'] || element?.tags?.name;
+            const rawName = osmName(element);
             if (element?.type !== 'node'
                 || !Number.isFinite(lat) || !Number.isFinite(lon)
                 || !PLACE_NODE_TYPES.includes(placeType)
-                || typeof rawName !== 'string' || !rawName.trim()) {
+                || !rawName) {
                 continue;
             }
             places.push({
@@ -860,16 +955,18 @@
         const roadsByName = new Map();
         for (const element of elements || []) {
             const roadType = element?.tags?.highway;
-            const rawName = element?.tags?.['name:de'] || element?.tags?.name;
-            const geometry = (element?.geometry || [])
-                .map(point => ({ lat: Number(point?.lat), lon: Number(point?.lon) }))
-                .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
+            const rawName = osmName(element);
+            // The geometry of a way is the expensive part of the reply, so the
+            // tag checks decide first.
             if (element?.type !== 'way'
                 || !Object.hasOwn(ROAD_TYPE_PRIORITY, roadType)
-                || typeof rawName !== 'string' || !rawName.trim()
-                || geometry.length < 2) {
+                || !rawName) {
                 continue;
             }
+            const geometry = (element.geometry || [])
+                .map(point => ({ lat: Number(point?.lat), lon: Number(point?.lon) }))
+                .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
+            if (geometry.length < 2) continue;
 
             const name = cleanPlaceName(rawName);
             const key = name.toLocaleLowerCase();
@@ -901,6 +998,10 @@
 
     const byTrackOrder = (first, second) =>
         first.anchor - second.anchor || first.distanceM - second.distanceM;
+
+    // Where along the ride something happened, the way every log line and the
+    // dialog spell it out.
+    const rangeLabel = range => `${range.fromKm.toFixed(2)}–${range.toKm.toFixed(2)} km`;
 
     // Every continuous stretch of track points within a feature's radius is one
     // visit, anchored at the closest point. Settlements, named roads and
@@ -1168,9 +1269,7 @@
         const roadPassages = placeRunCount < automaticPlaceLimit(track)
             ? passagesNearRoads(track, features.roads)
             : [];
-        const passages = placePassages
-            .concat(roadPassages)
-            .sort((a, b) => a.anchor - b.anchor || a.distanceM - b.distanceM);
+        const passages = placePassages.concat(roadPassages).sort(byTrackOrder);
         cacheRoutePassages(
             activityId,
             track,
@@ -1236,10 +1335,7 @@
         const lat = Number(result?.lat);
         const lon = Number(result?.lon);
         const address = typeof result?.display_name === 'string' ? result.display_name.trim() : '';
-        if (!Number.isFinite(lat) || lat < -90 || lat > 90
-            || !Number.isFinite(lon) || lon < -180 || lon > 180 || !address) {
-            return null;
-        }
+        if (!isUsableCoordinate(lat, lon) || !address) return null;
 
         const resultName = cleanOptionalPlaceName(result.name);
         const meaningfulResultName = resultName && !/^\d+[a-z]?$/i.test(resultName) ? resultName : null;
@@ -1336,6 +1432,11 @@
         );
     }
 
+    const projectPoint = (projection, lat, lon) => ({ x: projection.x(lon), y: projection.y(lat) });
+
+    const planarDistanceKm = (first, second) =>
+        Math.hypot(first.x - second.x, first.y - second.y);
+
     function projectedRunPoint(run, track, projection) {
         const fallbackIndex = Math.max(
             0,
@@ -1343,7 +1444,25 @@
         );
         const lat = Number.isFinite(run.lat) ? run.lat : track.latitudes[fallbackIndex];
         const lon = Number.isFinite(run.lon) ? run.lon : track.longitudes[fallbackIndex];
-        return { x: projection.x(lon), y: projection.y(lat) };
+        return projectPoint(projection, lat, lon);
+    }
+
+    // A settlement outranks any road, and a bigger road outranks a smaller one.
+    function runPriority(run) {
+        return run.featureKind === 'road' ? ROAD_TYPE_PRIORITY[run.roadType] || 0 : 100;
+    }
+
+    // Both selectors below pick the candidate with the highest scores, compared
+    // in order of importance; the tolerance keeps float noise from deciding a
+    // tie that the next score should settle.
+    const SCORE_EPSILON = 1e-9;
+
+    function scoresBetter(candidate, best) {
+        for (let i = 0; i < candidate.length; i++) {
+            if (candidate[i] > best[i] + SCORE_EPSILON) return true;
+            if (candidate[i] < best[i] - SCORE_EPSILON) return false;
+        }
+        return false;
     }
 
     function convexHullArea(points) {
@@ -1389,31 +1508,26 @@
             projectedRunPoint(runs[index], track, projection),
         ]));
 
+        // Widest spread first, then the candidate furthest from what is already
+        // in the name, then the more important feature.
         while (selected.size < targetSize) {
             const selectedPoints = Array.from(selected, index => points.get(index));
             let bestIndex = -1;
-            let bestArea = -1;
-            let bestSpacingKm = -1;
-            let bestPriority = -1;
+            let bestScores = [-1, -1, -1];
             for (const index of candidateIndices) {
                 if (selected.has(index)) continue;
                 const point = points.get(index);
-                const area = convexHullArea(selectedPoints.concat(point));
                 const nearestSelectedKm = selectedPoints.length === 0 ? 0 : Math.min(
                     ...selectedPoints.map(selectedPoint =>
-                        Math.hypot(point.x - selectedPoint.x, point.y - selectedPoint.y)),
+                        planarDistanceKm(point, selectedPoint)),
                 );
-                const priority = runs[index].featureKind === 'road'
-                    ? ROAD_TYPE_PRIORITY[runs[index].roadType] || 0
-                    : 100;
-                if (area > bestArea + 1e-9
-                    || (Math.abs(area - bestArea) <= 1e-9
-                        && (nearestSelectedKm > bestSpacingKm + 1e-9
-                            || (Math.abs(nearestSelectedKm - bestSpacingKm) <= 1e-9
-                                && priority > bestPriority)))) {
-                    bestArea = area;
-                    bestSpacingKm = nearestSelectedKm;
-                    bestPriority = priority;
+                const scores = [
+                    convexHullArea(selectedPoints.concat(point)),
+                    nearestSelectedKm,
+                    runPriority(runs[index]),
+                ];
+                if (scoresBetter(scores, bestScores)) {
+                    bestScores = scores;
                     bestIndex = index;
                 }
             }
@@ -1423,48 +1537,40 @@
         return selected;
     }
 
+    // With a single slot to give away, the place furthest from where the ride
+    // began and ended says the most about it.
     function selectSingleCoverageIndex(runs, track, candidateIndices) {
         if (candidateIndices.length === 0) return -1;
         const projection = trackProjection(track);
-        const start = projectedRunPoint({
-            orderIndex: 0,
-            lat: track.latitudes[0],
-            lon: track.longitudes[0],
-        }, track, projection);
         const lastIndex = track.latitudes.length - 1;
-        const finish = projectedRunPoint({
-            orderIndex: lastIndex,
-            lat: track.latitudes[lastIndex],
-            lon: track.longitudes[lastIndex],
-        }, track, projection);
+        const start = projectPoint(projection, track.latitudes[0], track.longitudes[0]);
+        const finish = projectPoint(
+            projection, track.latitudes[lastIndex], track.longitudes[lastIndex]);
+
         let bestIndex = candidateIndices[0];
-        let bestEndpointSpacingKm = -1;
-        let bestPriority = -1;
+        let bestScores = [-1, -1];
         for (const index of candidateIndices) {
             const point = projectedRunPoint(runs[index], track, projection);
-            const endpointSpacingKm = Math.min(
-                Math.hypot(point.x - start.x, point.y - start.y),
-                Math.hypot(point.x - finish.x, point.y - finish.y),
-            );
-            const priority = runs[index].featureKind === 'road'
-                ? ROAD_TYPE_PRIORITY[runs[index].roadType] || 0
-                : 100;
-            if (endpointSpacingKm > bestEndpointSpacingKm + 1e-9
-                || (Math.abs(endpointSpacingKm - bestEndpointSpacingKm) <= 1e-9
-                    && priority > bestPriority)) {
-                bestEndpointSpacingKm = endpointSpacingKm;
-                bestPriority = priority;
+            const scores = [
+                Math.min(planarDistanceKm(point, start), planarDistanceKm(point, finish)),
+                runPriority(runs[index]),
+            ];
+            if (scoresBetter(scores, bestScores)) {
+                bestScores = scores;
                 bestIndex = index;
             }
         }
         return bestIndex;
     }
 
+    const indicesWhere = (items, predicate) =>
+        items.flatMap((item, index) => (predicate(item, index) ? [index] : []));
+
     // Settlements have absolute priority. Named roads fill only unused slots.
-    // Interior favorites and pinned places occupy normal places in the limit;
+    // Interior favorites and kept places occupy normal places in the limit;
     // the first and last displayed route points do not consume it.
     function compactRouteRuns(allRuns, track) {
-        const isForced = run => Boolean(run.favorite || run.pinned);
+        const isForced = run => Boolean(run.favorite || run.kept);
         // A ride starts and finishes somewhere with a name people recognise, so
         // a street the route merely began on is dropped rather than promoted
         // into the first or last slot.
@@ -1493,22 +1599,14 @@
             0,
             automaticPlaceLimit(track) - interiorForcedCount,
         );
-        const placeIndices = runs
-            .map((run, index) =>
-                !endpointIndices.has(index) && !isForced(run) && run.featureKind === 'place'
-                    ? index
-                    : -1)
-            .filter(index => index >= 0);
+        // What the automatic slots may still choose from: everything the name
+        // does not already contain for another reason.
+        const isCandidate = (run, index) => !endpointIndices.has(index) && !isForced(run);
+        const placeIndices = indicesWhere(runs, (run, index) =>
+            isCandidate(run, index) && run.featureKind === 'place');
         const placeNames = new Set(placeIndices.map(index => runs[index].name));
-        const roadIndices = runs
-            .map((run, index) =>
-                !endpointIndices.has(index)
-                    && !isForced(run)
-                    && run.featureKind === 'road'
-                    && !placeNames.has(run.name)
-                    ? index
-                    : -1)
-            .filter(index => index >= 0);
+        const roadIndices = indicesWhere(runs, (run, index) =>
+            isCandidate(run, index) && run.featureKind === 'road' && !placeNames.has(run.name));
         let selectedAutomatic;
 
         if (automaticLimit === 0) {
@@ -1551,20 +1649,33 @@
             .map(run => ({ ...run }));
     }
 
-    function routeNamesFromPassages(passages, track, preferences, shouldLog = false) {
-        const { favorites, blockedNames, pinnedNames } = preferences;
+    // Every event that may reach the name, in track order: one per passage the
+    // user has not blocked, plus the favorites the passages never covered.
+    // `suppressed` collects what the block list took out, for the log.
+    function routeEvents(passages, track, preferences, shouldLog) {
+        const { favorites, blockedNames, kept: keptNames, dropped } = preferences;
         const visits = favoriteVisits(track, favorites);
         const blockedKeys = nameKeys(blockedNames);
-        const pinnedKeys = nameKeys(pinnedNames);
+        const keptKeys = nameKeys(keptNames);
+        const droppedKeys = nameKeys(dropped);
         const coveredVisits = new Set();
-        const suppressed = new Set();
+        const suppressed = { dropped: new Set(), blocked: new Set() };
         const events = [];
+        // What this ride says wins over what the block list says about every
+        // ride: the narrower answer is the one the user gave last.
+        const nameState = name => {
+            if (hasNameKey(name, droppedKeys)) return { kept: false, hidden: 'dropped' };
+            if (hasNameKey(name, keptKeys)) return { kept: true, hidden: null };
+            return { kept: false, hidden: hasNameKey(name, blockedKeys) ? 'blocked' : null };
+        };
+
         for (const passage of passages) {
             const match = closestFavoriteForPassage(passage, track, favorites);
             const name = match?.favorite.name || passage.baseName;
             if (!name) continue;
-            if (hasNameKey(name, blockedKeys)) {
-                suppressed.add(name);
+            const { kept, hidden } = nameState(name);
+            if (hidden) {
+                suppressed[hidden].add(name);
                 continue;
             }
 
@@ -1574,12 +1685,10 @@
                         coveredVisits.add(visit);
                     }
                 }
-            }
-
-            if (shouldLog && match) {
-                const distanceLabel = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
-                log(`Favorite ${distanceLabel}: ${match.favorite.name}`
-                    + ` (${match.distanceM.toFixed(0)} m from saved address)`);
+                if (shouldLog) {
+                    log(`Favorite ${rangeLabel(passage)}: ${match.favorite.name}`
+                        + ` (${match.distanceM.toFixed(0)} m from saved address)`);
+                }
             }
 
             events.push({
@@ -1593,19 +1702,19 @@
                 lon: match?.favorite.lon ?? passage.lon,
                 featureKind: match ? 'favorite' : passage.featureKind,
                 roadType: passage.roadType || null,
-                pinned: hasNameKey(name, pinnedKeys),
+                kept,
             });
         }
 
         for (const visit of visits) {
             if (coveredVisits.has(visit)) continue;
-            if (hasNameKey(visit.favorite.name, blockedKeys)) {
-                suppressed.add(visit.favorite.name);
+            const { kept, hidden } = nameState(visit.favorite.name);
+            if (hidden) {
+                suppressed[hidden].add(visit.favorite.name);
                 continue;
             }
             if (shouldLog) {
-                const distanceLabel = `${visit.fromKm.toFixed(2)}–${visit.toKm.toFixed(2)} km`;
-                log(`Favorite ${distanceLabel}: ${visit.favorite.name}`
+                log(`Favorite ${rangeLabel(visit)}: ${visit.favorite.name}`
                     + ` (${visit.distanceM.toFixed(0)} m from saved address; full-track visit)`);
             }
             events.push({
@@ -1619,51 +1728,68 @@
                 lon: visit.favorite.lon,
                 featureKind: 'favorite',
                 roadType: null,
-                pinned: hasNameKey(visit.favorite.name, pinnedKeys),
+                kept,
             });
         }
 
         events.sort((a, b) => a.orderIndex - b.orderIndex);
+        return { events, suppressed };
+    }
+
+    // Passing the same place twice in a row is one mention; a favorite or a
+    // settlement outranks the road name it shares its stretch of track with.
+    function mergeAdjacentEvents(events) {
         const runs = [];
         for (const event of events) {
             const last = runs[runs.length - 1];
-            if (last?.name === event.name) {
-                last.km += event.km;
-                last.fromKm = Math.min(last.fromKm, event.fromKm);
-                last.toKm = Math.max(last.toKm, event.toKm);
-                last.favorite ||= event.favorite;
-                last.pinned ||= event.pinned;
-                if (event.favorite) {
-                    last.featureKind = 'favorite';
-                } else if (event.featureKind === 'place' && last.featureKind === 'road') {
-                    last.featureKind = 'place';
-                }
-            } else {
+            if (last?.name !== event.name) {
                 runs.push({ ...event });
+                continue;
+            }
+            last.km += event.km;
+            last.fromKm = Math.min(last.fromKm, event.fromKm);
+            last.toKm = Math.max(last.toKm, event.toKm);
+            last.favorite ||= event.favorite;
+            last.kept ||= event.kept;
+            if (event.favorite) {
+                last.featureKind = 'favorite';
+            } else if (event.featureKind === 'place' && last.featureKind === 'road') {
+                last.featureKind = 'place';
             }
         }
+        return runs;
+    }
 
-        const compacted = compactRouteRuns(runs, track);
-        if (shouldLog) {
-            const selectedPlaces = compacted.filter(run => !run.favorite
-                && run.featureKind === 'place').length;
-            const selectedRoads = compacted.filter(run => !run.favorite
-                && run.featureKind === 'road').length;
-            const selectedFavorites = compacted.filter(run => run.favorite).length;
-            const selectedPinned = compacted.filter(run => run.pinned && !run.favorite).length;
-            log(`Map extent ${routeMapExtentKm(track).toFixed(1)} km: `
-                + `${selectedPlaces} settlements`
-                + (selectedRoads ? ` + ${selectedRoads} named-road fallbacks` : '')
-                + ` + ${selectedFavorites} favorites`
-                + (selectedPinned ? ` (${selectedPinned} pinned)` : ''));
+    // Why the name came out the way it did: what the slots went to, what the
+    // block list took out, and what did not fit.
+    function logRouteSelection(compacted, runs, suppressed, track) {
+        const count = predicate => compacted.filter(predicate).length;
+        const places = count(run => !run.favorite && run.featureKind === 'place');
+        const roads = count(run => !run.favorite && run.featureKind === 'road');
+        const favorites = count(run => run.favorite);
+        const kept = count(run => run.kept && !run.favorite);
+        log(`Map extent ${routeMapExtentKm(track).toFixed(1)} km: `
+            + `${places} settlements`
+            + (roads ? ` + ${roads} named-road fallbacks` : '')
+            + ` + ${favorites} favorites`
+            + (kept ? ` (${kept} kept for this ride)` : ''));
+        if (suppressed.blocked.size > 0) {
+            log(`Blocked from the name: ${Array.from(suppressed.blocked).join(', ')}`);
         }
-        if (shouldLog && suppressed.size > 0) {
-            log(`Blocked from the name: ${Array.from(suppressed).join(', ')}`);
+        if (suppressed.dropped.size > 0) {
+            log(`Removed from this ride: ${Array.from(suppressed.dropped).join(', ')}`);
         }
-        if (shouldLog && compacted.length < runs.length) {
+        if (compacted.length < runs.length) {
             log(`Name compacted from ${runs.length} to ${compacted.length} places: `
                 + compacted.map(run => run.name).join(' - '));
         }
+    }
+
+    function routeNamesFromPassages(passages, track, preferences, shouldLog = false) {
+        const { events, suppressed } = routeEvents(passages, track, preferences, shouldLog);
+        const runs = mergeAdjacentEvents(events);
+        const compacted = compactRouteRuns(runs, track);
+        if (shouldLog) logRouteSelection(compacted, runs, suppressed, track);
         return compacted.map(run => run.name);
     }
 
@@ -1672,8 +1798,7 @@
     function routePlaceNames(passages, track) {
         const placePassages = passages.filter(passage => passage.featureKind === 'place');
         for (const passage of placePassages) {
-            const distanceLabel = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
-            log(`Nearby place ${distanceLabel}: ${passage.baseName}`
+            log(`Nearby place ${rangeLabel(passage)}: ${passage.baseName}`
                 + ` (${passage.distanceM.toFixed(0)} m from OSM ${passage.placeType} node)`);
         }
         const roadPassageCount = passages.length - placePassages.length;
@@ -1734,13 +1859,18 @@
         };
     }
 
-    function updateFavoritesButtonLabel(favoriteCount = loadFavorites().length) {
-        const button = document.getElementById(FAVORITES_BUTTON_ID);
+    // The button opens the name of the ride in front of the rider, so what it
+    // counts is what that rider changed about it by hand — not how many places
+    // are saved for every other ride.
+    function updateAdjustButton() {
+        const button = document.getElementById(ADJUST_BUTTON_ID);
         if (!button) return;
-        button.textContent = favoriteCount > 0 ? `★ ${favoriteCount}` : '☆';
-        button.title = favoriteCount > 0
-            ? `Manage ${favoriteCount} favorite address${favoriteCount === 1 ? '' : 'es'}`
-            : 'Add and manage favorite addresses';
+        const { kept, dropped } = loadRideNames();
+        const edits = kept.length + dropped.length;
+        button.textContent = edits > 0 ? `${STRINGS.adjust} (${edits})` : STRINGS.adjust;
+        button.title = edits > 0
+            ? `${STRINGS.adjustTitle} — ${edits} change${edits === 1 ? '' : 's'} of your own`
+            : STRINGS.adjustTitle;
     }
 
     // Strava refuses an over-long title. The middle of the narrative is the
@@ -1775,15 +1905,17 @@
         );
     }
 
-    // Editing a favorite, a blocked or a pinned name rewrites the title in
-    // place, so the effect of the change is visible immediately.
+    // Every edit rewrites the title in place, so the effect of a click is
+    // visible immediately — including on the button, which counts the changes
+    // this ride carries.
     function refreshActivityName() {
         const names = currentRouteNames();
         if (names && setActivityName(names)) log(`Name updated: ${names.join(' - ')}`);
+        updateAdjustButton();
     }
 
     function favoriteFromForm(existing, passage, name, radiusText) {
-        const trimmedName = name.trim().replace(/\s+/g, ' ');
+        const trimmedName = collapseWhitespace(name);
         if (!isUsablePlaceName(trimmedName)) {
             throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
         }
@@ -1824,12 +1956,14 @@
         return true;
     }
 
-    async function runFavoriteAction(action) {
+    // Every dialog action reports the same way: nothing a click in here can hit
+    // is worth losing the page over.
+    async function runDialogAction(action) {
         try {
             await action();
         } catch (error) {
-            console.error(`${LOG_PREFIX} Favorite address error:`, error);
-            alert(`Favorite address error:\n${errorMessage(error)}`);
+            console.error(`${LOG_PREFIX} Route names error:`, error);
+            alert(`Route names error:\n${errorMessage(error)}`);
         }
     }
 
@@ -1852,15 +1986,26 @@
         return createElement('input', 'strava-route-field', { type: 'text', ...properties });
     }
 
-    function createSectionTitle(text, first = false) {
-        return createElement('h4', first ? 'strava-route-first' : '', { textContent: text });
+    function createSectionTitle(text) {
+        return createElement('h4', '', { textContent: text });
     }
 
     function createDialogNote(text) {
         return createElement('p', 'strava-route-note', { textContent: text });
     }
 
-    function appendFavoriteRow(container, title, details, actions) {
+    // Every list in the dialog reads the same way: a counted title, one line of
+    // guidance while it is empty, one row per entry once it is not.
+    function appendListSection(panel, title, items, { empty, row }) {
+        panel.append(createSectionTitle(`${title} (${items.length})`));
+        if (items.length === 0) {
+            panel.append(createDialogNote(empty));
+            return;
+        }
+        for (const item of items) row(item);
+    }
+
+    function appendDialogRow(container, title, details, actions) {
         const row = createElement('div', 'strava-route-row');
         const text = createElement('div', 'strava-route-row-text');
         text.append(
@@ -1879,9 +2024,11 @@
     // some browsers.
     function appendFavoriteEditor(panel, state, render) {
         const editing = state.editing;
+        if (!editing) return;
         const target = editing.existing || editing.passage;
         const section = createElement('div', 'strava-route-editor');
-        const title = createSectionTitle(editing.existing ? 'Edit favorite' : 'New favorite');
+        const title = createSectionTitle(
+            editing.existing ? 'Rename this place' : 'Name this place');
 
         const nameInput = createDialogInput({
             id: 'strava-route-favorite-name-input',
@@ -1953,8 +2100,42 @@
         return status;
     }
 
-    function appendManualFavoriteSearch(panel, state, render) {
-        const title = createSectionTitle('Add by address', true);
+    // The search reports itself through the same state the panel renders from,
+    // so a failure reads as a line under the field instead of a modal.
+    async function runAddressSearch(state, render) {
+        const query = collapseWhitespace(state.search.query);
+        if (!query) {
+            state.search.status = 'Enter an address to search.';
+            state.search.error = true;
+            render();
+            return;
+        }
+
+        state.search.busy = true;
+        state.search.candidates = [];
+        state.search.status = 'Searching…';
+        state.search.error = false;
+        render();
+        try {
+            const candidates = await searchFavoriteAddresses(query);
+            state.search.candidates = candidates;
+            state.search.status = candidates.length
+                ? `Found ${candidates.length}. Choose the correct address.`
+                : 'No addresses found. Add a city or postcode and try again.';
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Address search error:`, error);
+            state.search.status = `Search failed: ${errorMessage(error)}`;
+            state.search.error = true;
+        } finally {
+            state.search.busy = false;
+            render();
+        }
+    }
+
+    // A place the route never came near — a café one street off it — has no
+    // landmark row to start from, so it is searched for by address.
+    function appendAddressSearch(panel, state, render) {
+        const note = createDialogNote('Add a place by address:');
         const form = createElement('form', 'strava-route-form');
 
         const input = createDialogInput({
@@ -1977,51 +2158,16 @@
         const status = createStatusLine(state.search.status, state.search.error);
         const results = document.createElement('div');
         for (const candidate of state.search.candidates) {
-            const addButton = createDialogButton('☆ Add', true);
-            addButton.addEventListener('click', () => {
-                state.editing = {
-                    passage: candidate,
-                    existing: null,
-                    name: candidate.baseName,
-                    radiusM: String(CONFIG.favoriteRadiusM),
-                    error: '',
-                };
-                render();
-            });
-            appendFavoriteRow(results, candidate.baseName, candidate.address, [addButton]);
+            const addButton = createDialogButton('☆ Save', true);
+            addButton.addEventListener('click', () =>
+                openFavoriteEditor(state, render, { passage: candidate, anchor: candidate }));
+            appendDialogRow(results, candidate.baseName, candidate.address, [addButton]);
+            appendEditorAt(results, state, render, candidate);
         }
 
         form.addEventListener('submit', event => {
             event.preventDefault();
-            void runFavoriteAction(async () => {
-                const query = state.search.query.trim().replace(/\s+/g, ' ');
-                if (!query) {
-                    state.search.status = 'Enter an address to search.';
-                    state.search.error = true;
-                    render();
-                    return;
-                }
-
-                state.search.busy = true;
-                state.search.candidates = [];
-                state.search.status = 'Searching…';
-                state.search.error = false;
-                render();
-                try {
-                    const candidates = await searchFavoriteAddresses(query);
-                    state.search.candidates = candidates;
-                    state.search.status = candidates.length
-                        ? `Found ${candidates.length}. Choose the correct address.`
-                        : 'No addresses found. Add a city or postcode and try again.';
-                } catch (error) {
-                    console.error(`${LOG_PREFIX} Address search error:`, error);
-                    state.search.status = `Search failed: ${errorMessage(error)}`;
-                    state.search.error = true;
-                } finally {
-                    state.search.busy = false;
-                    render();
-                }
-            });
+            void runDialogAction(() => runAddressSearch(state, render));
         });
 
         const attribution = createElement('div', 'strava-route-attribution');
@@ -2033,14 +2179,15 @@
         attributionLink.textContent = 'OpenStreetMap contributors';
         attribution.append(attributionLink);
 
-        panel.append(title, form, status, results, attribution);
+        panel.append(note, form, status, results, attribution);
     }
 
+    // Names kept for a single ride are left out: they are a note about one
+    // activity, not a saved place worth carrying to another browser.
     function backupPayload() {
         return {
             favorites: loadFavorites(),
             blockedNames: loadBlockedNames(),
-            pinnedNames: loadPinnedNames(),
         };
     }
 
@@ -2061,12 +2208,10 @@
         }
         saveFavorites(normalized);
         const blocked = saveNameList(STORAGE_KEY.blockedNames, parsed?.blockedNames);
-        const pinned = saveNameList(STORAGE_KEY.pinnedNames, parsed?.pinnedNames);
         refreshActivityName();
         return {
             favorites: normalized.length,
             blockedNames: blocked.length,
-            pinnedNames: pinned.length,
         };
     }
 
@@ -2098,7 +2243,7 @@
         // Importing replaces everything, so the button asks once before it does.
         const importButton = createDialogButton(
             state.backup.armed ? 'Replace everything' : 'Import', true);
-        importButton.addEventListener('click', () => runFavoriteAction(() => {
+        importButton.addEventListener('click', () => runDialogAction(() => {
             if (!state.backup.armed) {
                 state.backup.armed = true;
                 state.backup.text = textarea.value;
@@ -2107,8 +2252,8 @@
                 return;
             }
             const imported = applyBackup(textarea.value);
-            log(`Imported ${imported.favorites} favorites, ${imported.blockedNames} blocked`
-                + ` and ${imported.pinnedNames} pinned names`);
+            log(`Imported ${imported.favorites} favorites`
+                + ` and ${imported.blockedNames} blocked names`);
             state.backup = { text: null, armed: false, status: 'Backup imported.' };
             render();
         }));
@@ -2119,11 +2264,24 @@
         panel.append(title, note, textarea, controls, status);
     }
 
-    function openFavoritesDialog() {
-        document.getElementById(FAVORITES_DIALOG_ID)?.remove();
+    // The dialog is about one thing — the sentence in the title field — so that
+    // is what it opens with, editable part by part, followed by the places the
+    // ride passed that are not in it. Everything below is a setting behind that
+    // name: what a place is called everywhere, what is never named at all, and
+    // the backup nobody opens twice.
+    const DIALOG_SECTIONS = [
+        appendThisName,
+        appendAlsoPassed,
+        appendSavedPlaces,
+        appendBlockedNames,
+        appendBackupSection,
+    ];
+
+    function openNameDialog() {
+        document.getElementById(NAME_DIALOG_ID)?.remove();
 
         const overlay = createElement('div', 'strava-route-overlay', {
-            id: FAVORITES_DIALOG_ID,
+            id: NAME_DIALOG_ID,
         });
         const panel = createElement('div', 'strava-route-panel');
 
@@ -2142,22 +2300,19 @@
         // Every action mutates the dialog state and re-renders, so the name
         // preview and the buttons can never drift apart from the stored data.
         const state = {
+            view: null,
             editing: null,
             confirmingDeleteId: null,
             search: { query: '', candidates: [], status: '', error: false, busy: false },
             backup: { text: null, armed: false, status: '' },
         };
+        // The route is read once per render and shared: two sections describe
+        // the same name from opposite sides.
         const render = () => {
+            state.view = currentRouteView();
             panel.replaceChildren();
             appendDialogHeader(panel, close);
-            appendNamePreview(panel);
-            if (state.editing) appendFavoriteEditor(panel, state, render);
-            appendManualFavoriteSearch(panel, state, render);
-            appendSavedFavorites(panel, state, render);
-            appendNameList(panel, render, STORAGE_KEY.blockedNames);
-            appendNameList(panel, render, STORAGE_KEY.pinnedNames);
-            appendBackupSection(panel, state, render);
-            appendRouteLandmarks(panel, state, render);
+            for (const section of DIALOG_SECTIONS) section(panel, state, render);
         };
         render();
 
@@ -2176,157 +2331,225 @@
         panel.append(header);
     }
 
-    // The title field is rewritten on every change; showing the same name here
-    // makes the effect of a click obvious while the dialog covers the page.
-    function appendNamePreview(panel) {
-        const names = currentRouteNames();
-        const box = createElement('div', 'strava-route-preview');
-        box.append(
-            createElement('div', 'strava-route-preview-label', { textContent: 'Name preview' }),
-            createElement(
-                'div',
-                `strava-route-preview-value${names ? '' : ' strava-route-preview-value--empty'}`,
-                {
-                    id: 'strava-route-name-preview',
-                    textContent: names?.join(' - ')
-                        || 'Generate the name first, then adjust it here.',
-                },
-            ),
-        );
-        panel.append(box);
-    }
-
-    function appendSavedFavorites(panel, state, render) {
-        const favorites = loadFavorites();
-        panel.append(createSectionTitle(`Saved places (${favorites.length})`));
-        if (favorites.length === 0) {
-            panel.append(createDialogNote('No favorite places yet.'));
-            return;
-        }
-
-        for (const favorite of favorites) {
-            const editButton = createDialogButton('Edit');
-            editButton.addEventListener('click', () => {
-                state.editing = {
-                    existing: favorite,
-                    passage: null,
-                    name: favorite.name,
-                    radiusM: String(favorite.radiusM),
-                    error: '',
-                };
-                state.confirmingDeleteId = null;
-                render();
-            });
-
-            const confirming = state.confirmingDeleteId === favorite.id;
-            const deleteButton = createDialogButton(confirming ? 'Confirm delete' : 'Delete');
-            deleteButton.addEventListener('click', () => runFavoriteAction(() => {
-                if (!confirming) {
-                    state.confirmingDeleteId = favorite.id;
-                    render();
-                    return;
-                }
-                removeFavorite(favorite.id);
-                state.confirmingDeleteId = null;
-                render();
-            }));
-
-            const coordinates = `${favorite.lat.toFixed(5)}, ${favorite.lon.toFixed(5)}`;
-            appendFavoriteRow(
-                panel,
-                `★ ${favorite.name}`,
-                `${favorite.address || coordinates} · ${favorite.radiusM} m`,
-                [editButton, deleteButton],
-            );
-        }
-    }
-
-    const NAME_LIST_LABELS = {
-        [STORAGE_KEY.blockedNames]: {
-            title: 'Never in a name',
-            empty: 'Block a landmark below to keep it out of every name.',
-            marker: '⛔',
-            details: 'Left out of every name',
-            remove: 'Unblock',
-        },
-        [STORAGE_KEY.pinnedNames]: {
-            title: 'Always in a name',
-            empty: 'Pin a landmark below to keep it even when the slots run out.',
-            marker: '📌',
-            details: 'Kept even when the automatic slots run out',
-            remove: 'Unpin',
-        },
-    };
-
-    function appendNameList(panel, render, key) {
-        const labels = NAME_LIST_LABELS[key];
-        const names = loadNameList(key);
-        panel.append(createSectionTitle(`${labels.title} (${names.length})`));
-        if (names.length === 0) {
-            panel.append(createDialogNote(labels.empty));
-            return;
-        }
-        for (const name of names) {
-            const removeButton = createDialogButton(labels.remove);
-            removeButton.addEventListener('click', () => runFavoriteAction(() => {
-                toggleNameList(key, name);
-                render();
-            }));
-            appendFavoriteRow(panel, `${labels.marker} ${name}`, labels.details, [removeButton]);
-        }
-    }
-
-    function appendRouteLandmarks(panel, state, render) {
-        panel.append(createSectionTitle('Route landmarks'));
+    // What the dialog is looking at: the ride analyzed for this page, the name
+    // it currently produces, and the landmark behind every part of that name.
+    function currentRouteView() {
         const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
-        if (!analysis) {
-            panel.append(createDialogNote('Generate the route name first, then adjust it here.'));
+        if (!analysis) return null;
+
+        const favorites = loadFavorites();
+        const landmarks = analysis.passages.map(passage => {
+            const match = closestFavoriteForPassage(passage, analysis.track, favorites);
+            return { passage, match, name: match?.favorite.name || passage.baseName };
+        });
+        const byName = new Map();
+        for (const landmark of landmarks) {
+            if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
+        }
+        return { names: currentRouteNames() || [], landmarks, byName, favorites };
+    }
+
+    // One place builds the editor state, so a chip, a landmark, a saved place
+    // and a search result all open the same form — under whatever was clicked.
+    function openFavoriteEditor(state, render, { existing = null, passage = null, anchor }) {
+        state.editing = {
+            existing,
+            passage,
+            anchor,
+            name: existing?.name || passage?.baseName || '',
+            radiusM: String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
+            error: '',
+        };
+        state.confirmingDeleteId = null;
+        render();
+    }
+
+    function appendEditorAt(container, state, render, anchor) {
+        if (state.editing?.anchor === anchor) appendFavoriteEditor(container, state, render);
+    }
+
+    const NAME_ANCHOR = 'name';
+
+    // The name as the sentence it is: one chip per part, in the order they are
+    // written. The chip's own label renames the place, the ✕ takes it out of
+    // this ride. Below them stands the exact string the title field will hold —
+    // an over-long narrative reaches it shortened, and that is worth seeing.
+    function appendThisName(panel, state, render) {
+        const view = state.view;
+        panel.append(createSectionTitle(view ? `This name (${view.names.length})` : 'This name'));
+        if (!view) {
+            panel.append(createDialogNote('Generate the name first, then adjust it here.'));
             return;
         }
 
-        const favorites = loadFavorites();
-        const blockedKeys = nameKeys(loadBlockedNames());
-        const pinnedKeys = nameKeys(loadPinnedNames());
-        for (const passage of analysis.passages) {
-            const match = closestFavoriteForPassage(passage, analysis.track, favorites);
-            const displayName = match?.favorite.name || passage.baseName;
-            const actionButton = createDialogButton(match ? `★ ${match.favorite.name}` : '☆ Add',
-                !match);
-            actionButton.addEventListener('click', () => {
-                state.editing = {
-                    existing: match?.favorite || null,
-                    passage,
-                    name: match?.favorite.name || passage.baseName || '',
-                    radiusM: String(match?.favorite.radiusM ?? CONFIG.favoriteRadiusM),
-                    error: '',
-                };
-                render();
-            });
+        if (view.names.length === 0) {
+            panel.append(createDialogNote('Nothing is in the name. Add a landmark below.'));
+        } else {
+            const chips = createElement('div', 'strava-route-chips');
+            for (const name of view.names) {
+                chips.append(createNameChip(name, view, state, render));
+            }
+            panel.append(chips);
+        }
 
-            const toggles = [
-                { key: STORAGE_KEY.pinnedNames, keys: pinnedKeys, on: '📌 Pinned', off: '📌 Pin' },
-                { key: STORAGE_KEY.blockedNames, keys: blockedKeys, on: '⛔ Blocked', off: '⛔ Block' },
-            ].map(({ key, keys, on, off }) => {
-                const active = Boolean(displayName) && hasNameKey(displayName, keys);
-                const button = createDialogButton(active ? on : off);
-                button.disabled = !displayName;
-                button.title = `${NAME_LIST_LABELS[key].title}: ${displayName || 'unnamed place'}`;
-                button.addEventListener('click', () => runFavoriteAction(() => {
-                    toggleNameList(key, displayName);
+        panel.append(createElement(
+            'p',
+            `strava-route-preview-value${view.names.length ? '' : ' strava-route-preview-value--empty'}`,
+            {
+                id: 'strava-route-name-preview',
+                textContent: view.names.length
+                    ? fitNameLength(view.names)
+                    : 'The title field is left alone while the name is empty.',
+            },
+        ));
+        appendEditorAt(panel, state, render, NAME_ANCHOR);
+    }
+
+    function createNameChip(name, view, state, render) {
+        const chip = createElement('div', 'strava-route-chip');
+        const landmark = view.byName.get(name);
+        // A favorite can reach the name through a full-track visit that no
+        // passage covers, so the chip falls back to matching it by name.
+        const favorite = landmark?.match?.favorite
+            || view.favorites.find(saved => saved.name === name)
+            || null;
+
+        const renameButton = createElement('button', 'strava-route-chip-name', {
+            type: 'button',
+            textContent: name,
+            title: favorite || landmark
+                ? `Rename ${name} wherever a route comes near it`
+                : `${name} has no place to rename`,
+        });
+        renameButton.disabled = !favorite && !landmark;
+        renameButton.addEventListener('click', () => openFavoriteEditor(state, render, {
+            existing: favorite,
+            passage: landmark?.passage || null,
+            anchor: NAME_ANCHOR,
+        }));
+
+        const dropButton = createElement('button', 'strava-route-chip-drop', {
+            type: 'button',
+            textContent: '✕',
+            title: `Take ${name} out of this ride’s name`,
+        });
+        dropButton.addEventListener('click', () => runDialogAction(() => {
+            dropFromThisName(name);
+            render();
+        }));
+
+        chip.append(renameButton, dropButton);
+        return chip;
+    }
+
+    // Everything the route came near that the name does not mention: the places
+    // the automatic selection had no slot for, the ones taken out by hand, and
+    // the ones the block list silences everywhere.
+    function appendAlsoPassed(panel, state, render) {
+        const view = state.view;
+        if (!view) return;
+
+        const inName = new Set(view.names);
+        const dropped = nameKeys(loadRideNames().dropped);
+        const blocked = nameKeys(loadBlockedNames());
+        appendListSection(
+            panel,
+            'Also passed',
+            view.landmarks.filter(landmark => landmark.name && !inName.has(landmark.name)),
+            {
+                empty: 'Every landmark of this route is in the name.',
+                row: landmark => {
+                    appendAlsoPassedRow(panel, landmark, { dropped, blocked }, state, render);
+                    appendEditorAt(panel, state, render, landmark.passage);
+                },
+            },
+        );
+    }
+
+    function appendAlsoPassedRow(panel, landmark, keys, state, render) {
+        const { passage, match, name } = landmark;
+
+        const addButton = createDialogButton('⊕ Add', true);
+        addButton.title = `Put ${name} into this ride’s name`;
+        addButton.addEventListener('click', () => runDialogAction(() => {
+            keepInThisName(name);
+            render();
+        }));
+
+        const renameButton = createDialogButton(match ? `★ ${match.favorite.name}` : '★ Rename');
+        renameButton.addEventListener('click', () => openFavoriteEditor(state, render, {
+            existing: match?.favorite || null,
+            passage,
+            anchor: passage,
+        }));
+
+        const isBlocked = hasNameKey(name, keys.blocked);
+        const blockButton = createDialogButton(isBlocked ? '⛔ Blocked' : '⛔ Never');
+        blockButton.title = `Leave ${name} out of every name, on every ride`;
+        blockButton.addEventListener('click', () => runDialogAction(() => {
+            toggleBlockedName(name);
+            render();
+        }));
+
+        // Why it is not in the name comes first; a place that simply lost the
+        // slot says nothing and goes straight to where it was passed.
+        const reason = hasNameKey(name, keys.dropped) ? 'Removed from this ride'
+            : isBlocked ? 'Never in a name'
+                : null;
+        const details = [reason, rangeLabel(passage), passage.address]
+            .filter(Boolean)
+            .join(' · ');
+        appendDialogRow(panel, name, details, [addButton, renameButton, blockButton]);
+    }
+
+    // A saved name replaces the OSM one on every ride that comes near it, so
+    // this is the list of the places the rider has words of their own for.
+    function appendSavedPlaces(panel, state, render) {
+        appendListSection(panel, 'Saved places', loadFavorites(), {
+            empty: 'No saved names yet. Rename a place above, or add one by address.',
+            row: favorite => {
+                const editButton = createDialogButton('Edit');
+                editButton.addEventListener('click', () =>
+                    openFavoriteEditor(state, render, { existing: favorite, anchor: favorite }));
+
+                const confirming = state.confirmingDeleteId === favorite.id;
+                const deleteButton = createDialogButton(confirming ? 'Confirm delete' : 'Delete');
+                deleteButton.addEventListener('click', () => runDialogAction(() => {
+                    if (!confirming) {
+                        state.confirmingDeleteId = favorite.id;
+                        render();
+                        return;
+                    }
+                    removeFavorite(favorite.id);
+                    state.confirmingDeleteId = null;
                     render();
                 }));
-                return button;
-            });
 
-            const distance = `${passage.fromKm.toFixed(2)}–${passage.toKm.toFixed(2)} km`;
-            const coordinates = `${passage.lat.toFixed(5)}, ${passage.lon.toFixed(5)}`;
-            appendFavoriteRow(
-                panel,
-                `${distance} · ${passage.baseName || 'Unknown place'}`,
-                passage.address || coordinates,
-                [actionButton, ...toggles],
-            );
-        }
+                const coordinates = `${favorite.lat.toFixed(5)}, ${favorite.lon.toFixed(5)}`;
+                appendDialogRow(
+                    panel,
+                    `★ ${favorite.name}`,
+                    `${favorite.address || coordinates} · ${favorite.radiusM} m`,
+                    [editButton, deleteButton],
+                );
+                appendEditorAt(panel, state, render, favorite);
+            },
+        });
+        appendAddressSearch(panel, state, render);
+    }
+
+    function appendBlockedNames(panel, state, render) {
+        appendListSection(panel, 'Never in a name', loadBlockedNames(), {
+            empty: 'Nothing is blocked. “Never” on a landmark silences a name for good.',
+            row: name => {
+                const removeButton = createDialogButton('Unblock');
+                removeButton.addEventListener('click', () => runDialogAction(() => {
+                    toggleBlockedName(name);
+                    render();
+                }));
+                appendDialogRow(panel, `⛔ ${name}`, 'Left out of every name', [removeButton]);
+            },
+        });
     }
 
     async function generateAndFillName(button) {
@@ -2408,20 +2631,20 @@
             void generateAndFillName(button);
         });
 
-        const favoritesButton = createElement(
+        const adjustButton = createElement(
             'button',
             'strava-route-button strava-route-button--secondary',
-            { id: FAVORITES_BUTTON_ID, type: 'button' },
+            { id: ADJUST_BUTTON_ID, type: 'button', textContent: STRINGS.adjust },
         );
-        favoritesButton.addEventListener('click', event => {
+        adjustButton.addEventListener('click', event => {
             event.preventDefault();
-            runFavoriteAction(openFavoritesDialog);
+            runDialogAction(openNameDialog);
         });
 
         const wrapper = createElement('div', 'strava-route-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-        wrapper.append(titleLabel, button, favoritesButton);
-        runFavoriteAction(updateFavoritesButtonLabel);
+        wrapper.append(titleLabel, button, adjustButton);
+        runDialogAction(updateAdjustButton);
         log('Button injected');
         return true;
     }
@@ -2456,7 +2679,7 @@
 
     migrateSettingToUserscriptStorage(STORAGE_KEY.favorites);
     migrateSettingToUserscriptStorage(STORAGE_KEY.blockedNames);
-    migrateSettingToUserscriptStorage(STORAGE_KEY.pinnedNames);
+    migrateSettingToUserscriptStorage(STORAGE_KEY.keptNames);
     if (injectButton()) watchInjectedButton();
     else watchForEditForm();
 })();
