@@ -30,7 +30,7 @@ test('discards a cache written under different naming settings', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         storage: {
             [cacheKey]: JSON.stringify({
-                signature: 'written-by-an-older-config',
+                signature: 'written-by-a-different-config',
                 savedAt: Date.now(),
                 passages: [],
                 placeCount: 0,
@@ -68,13 +68,12 @@ test('falls over to another Overpass mirror when one is busy', async () => {
     assert.ok(renamer.timerDelays.includes(1000), 'switching mirrors does not wait out a backoff');
 });
 
-test('routes cross-origin calls through the userscript manager when granted', async () => {
+test('routes cross-origin calls through the userscript manager', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const renamer = loadRenamer({
         activityId: fixture.activityId,
         gpx: toGpx(fixture.points),
         overpassResponses: [jsonResponse({ elements: overpassElements(fixture) })],
-        userscriptManager: true,
     });
 
     const name = await renamer.generate();

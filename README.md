@@ -10,12 +10,11 @@ roads along the track, and fills in the title field on the activity edit page.
 
 ## Install
 
-Open `activity-renamer.user.js` in Tampermonkey. The script asks for
-`GM_xmlhttpRequest` (so Strava's Content-Security-Policy cannot block Overpass
-or Nominatim) and `GM_getValue`/`GM_setValue` (so the saved places survive
-clearing the site data). Without those grants it falls back to `fetch` and
-`localStorage` and still works. There is no `@updateURL`: a local copy has to be
-re-imported by hand after every change.
+Open `activity-renamer.user.js` in Tampermonkey. The script uses
+`GM.xmlHttpRequest` so Strava's Content-Security-Policy cannot block Overpass
+or Nominatim, and `GM.getValues`/`GM.setValue` for saved places and preferences.
+There is no `@updateURL`: a local copy has to be re-imported by hand after every
+change.
 
 ## How a name is built
 
@@ -94,7 +93,7 @@ Each file holds one subject, named after it:
 | `name.test.mjs` | the narrative: revisits, road fallback, endpoints, slots, length |
 | `ride-edits.test.mjs` | adding and removing for one ride, the block list, the button's count |
 | `dialog.test.mjs` | sections, chips, the editor and its errors, address search, backup |
-| `storage.test.mjs` | userscript storage, the move out of `localStorage`, retired keys |
+| `storage.test.mjs` | userscript storage |
 | `overpass.test.mjs` | mirrors, retries, transport, the passage cache |
 | `page.test.mjs` | button injection, observers, stylesheet, an activity without GPS |
 

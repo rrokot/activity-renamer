@@ -4,35 +4,27 @@ import test from 'node:test';
 import {
     loadRenamer,
 } from './support/harness.mjs';
-// A page's style-src can drop an injected <style> tag, but never reaches a
-// constructed sheet — the same reason the network calls avoid page fetch.
-test('adopts its stylesheet through the CSSOM when it can', () => {
-    const renamer = loadRenamer({ constructedStylesheets: true });
+// A page's style-src cannot block a constructed stylesheet.
+test('adopts its stylesheet through the CSSOM', async () => {
+    const renamer = loadRenamer();
+    await renamer.ready;
 
     assert.equal(renamer.document.adoptedStyleSheets.length, 1);
     assert.match(renamer.document.adoptedStyleSheets[0].cssText, /\.activity-renamer-panel/);
-    assert.equal(renamer.byId('activity-renamer-styles'), null, 'no <style> tag is needed');
 });
 
-test('falls back to a style tag on engines without constructed sheets', () => {
+test('stops watching the whole page once the button is in', async () => {
     const renamer = loadRenamer();
-    const style = renamer.byId('activity-renamer-styles');
-
-    assert.ok(style, 'the stylesheet is installed');
-    assert.match(style.textContent, /\.activity-renamer-panel/);
-    assert.equal(style.parentNode, renamer.document.head);
-});
-
-test('stops watching the whole page once the button is in', () => {
-    const renamer = loadRenamer();
+    await renamer.ready;
 
     assert.ok(renamer.button, 'the button is injected on load');
     assert.equal(renamer.observers.filter(observer => observer.connected).length, 1,
         'exactly one narrow observer is left watching');
 });
 
-test('re-injects the button when Strava re-renders the title field', () => {
+test('re-injects the button when Strava re-renders the title field', async () => {
     const renamer = loadRenamer();
+    await renamer.ready;
     const form = renamer.document.querySelector('form');
 
     // Strava rebuilds the field, throwing our wrapper away with it.

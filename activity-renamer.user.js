@@ -1,24 +1,21 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      6.0.2
+// @version      6.0.5
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
-// @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_deleteValue
+// @grant        GM.getValues
+// @grant        GM.setValue
 // @connect      overpass-api.de
 // @connect      overpass.kumi.systems
 // @connect      overpass.private.coffee
 // @connect      nominatim.openstreetmap.org
-// @connect      self
 // @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(async function() {
     'use strict';
 
     const CONFIG = {
@@ -77,6 +74,7 @@
         blockedNames: 'activity_renamer_blocked_names_v1',
         rideNames: 'activity_renamer_ride_names_v1',
     };
+    const settings = new Map();
     // One stylesheet instead of a style object per element. It is adopted
     // through the CSSOM rather than injected as a <style> tag, because a
     // page's style-src policy can drop the tag but never reaches constructed
@@ -89,7 +87,6 @@
     // :root by the page, so the dialog follows the site instead of guessing at
     // it. They are used without a var() fallback: if Strava ever renames one,
     // the affected rule drops out rather than silently drifting out of date.
-    const STYLE_ID = 'activity-renamer-styles';
     const STYLES = `
 .activity-renamer-button.activity-renamer-button {
     flex: 0 0 auto;
@@ -276,22 +273,14 @@
 }
 `;
 
+    let installedStyleSheet = null;
+
     function installStyles() {
-        if (document.getElementById(STYLE_ID)) return;
-        if (typeof CSSStyleSheet === 'function' && Array.isArray(document.adoptedStyleSheets)) {
-            try {
-                const sheet = new CSSStyleSheet();
-                sheet.replaceSync(STYLES);
-                document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-                return;
-            } catch {
-                // Older engines reject constructed sheets; fall back to a tag.
-            }
-        }
-        const style = document.createElement('style');
-        style.id = STYLE_ID;
-        style.textContent = STYLES;
-        (document.head || document.documentElement).append(style);
+        if (installedStyleSheet) return;
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(STYLES);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        installedStyleSheet = sheet;
     }
 
     const BUTTON_ID = 'activity-renamer-rename-btn';
@@ -327,15 +316,6 @@
         return String(url).replace(/^https?:\/\//, '').split('/')[0];
     }
 
-    // Present only when the script is installed with the matching @grant.
-    function userscriptRequest() {
-        if (typeof GM_xmlhttpRequest === 'function') return GM_xmlhttpRequest;
-        if (typeof GM === 'object' && typeof GM?.xmlHttpRequest === 'function') {
-            return GM.xmlHttpRequest.bind(GM);
-        }
-        return null;
-    }
-
     function parseResponseHeaders(raw) {
         const headers = new Map();
         for (const line of String(raw || '').split(/\r?\n/)) {
@@ -363,14 +343,10 @@
     }
 
     // Cross-origin calls go through the userscript manager, so Strava's
-    // Content-Security-Policy cannot block Overpass or Nominatim. Installs
-    // without the grant keep working through plain fetch.
+    // Content-Security-Policy cannot block Overpass or Nominatim.
     function requestCrossOrigin(url, options = {}) {
-        const request = userscriptRequest();
-        if (!request) return fetch(url, options);
-
         return new Promise((resolve, reject) => {
-            request({
+            GM.xmlHttpRequest({
                 method: options.method || 'GET',
                 url,
                 headers: options.headers,
@@ -420,70 +396,30 @@
         }
     }
 
-    // Settings the user typed in by hand live in the userscript manager's
-    // storage: unlike localStorage it survives clearing the site data and is
-    // carried along by the extension's own sync. Only the synchronous GM_*
-    // API is used, so the naming path stays synchronous; installs without the
-    // grants keep everything in localStorage.
-    function hasUserscriptStorage() {
-        return typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+    async function loadSettings() {
+        const keys = Object.values(STORAGE_KEY);
+        const stored = await GM.getValues(keys);
+        for (const key of keys) settings.set(key, stored[key] ?? null);
     }
 
+    // User settings live exclusively in the userscript manager's storage and
+    // are read from memory after the initial load.
     function readSetting(key) {
-        if (!hasUserscriptStorage()) return readJsonCache(key);
-        const stored = GM_getValue(key, null);
-        if (typeof stored === 'string') {
-            try {
-                return JSON.parse(stored);
-            } catch {
-                return null;
-            }
+        const stored = settings.get(key) ?? null;
+        if (typeof stored !== 'string') return stored;
+        try {
+            return JSON.parse(stored);
+        } catch {
+            throw new Error(`Stored setting ${key} is not valid JSON.`);
         }
-        return stored ?? readJsonCache(key);
     }
 
     function writeSetting(key, value) {
-        if (!hasUserscriptStorage()) {
-            writeJsonCache(key, value);
-            return;
-        }
-        GM_setValue(key, JSON.stringify(value));
-        if (localStorage.getItem(key) !== null) localStorage.removeItem(key);
-    }
-
-    // Keys earlier versions wrote and this one no longer reads: the favorites
-    // that became saved places, and the two shapes the per-ride list went
-    // through. Renaming a key orphans what is under the old one, so the old one
-    // is cleared instead of left to sit in the profile for good.
-    const RETIRED_STORAGE_KEYS = [
-        'activity_renamer_favorites_v1',
-        'activity_renamer_pinned_names_v1',
-        'activity_renamer_kept_names_v1',
-    ];
-
-    function forgetRetiredSettings() {
-        const forgotten = [];
-        for (const key of RETIRED_STORAGE_KEYS) {
-            if (localStorage.getItem(key) !== null) {
-                localStorage.removeItem(key);
-                forgotten.push(key);
-            }
-            if (typeof GM_deleteValue === 'function' && GM_getValue(key, null) !== null) {
-                GM_deleteValue(key);
-                forgotten.push(key);
-            }
-        }
-        if (forgotten.length > 0) log(`Cleared retired settings: ${forgotten.join(', ')}`);
-    }
-
-    // Anything saved by an older install is moved over once, so a browser
-    // clean-up cannot take it away afterwards.
-    function migrateSettingToUserscriptStorage(key) {
-        if (!hasUserscriptStorage() || GM_getValue(key, null) !== null) return;
-        const stored = readJsonCache(key);
-        if (stored === null) return;
-        writeSetting(key, stored);
-        log(`Moved ${key} into userscript storage`);
+        const stored = JSON.stringify(value);
+        settings.set(key, stored);
+        void GM.setValue(key, stored).catch(error => {
+            console.error(`${LOG_PREFIX} Failed to save ${key}:`, error);
+        });
     }
 
     // A name typed into a field, pasted in a backup or read from OSM reaches
@@ -493,7 +429,7 @@
     }
 
     // The single gate every saved place passes, whether it comes from the form, a
-    // pasted backup or an older version of the script.
+    // pasted backup or the editor.
     function isUsableRadius(radiusM) {
         return Number.isFinite(radiusM)
             && radiusM >= CONFIG.savedPlaceRadiusMinM
@@ -1464,13 +1400,7 @@
         Math.hypot(first.x - second.x, first.y - second.y);
 
     function projectedRunPoint(run, track, projection) {
-        const fallbackIndex = Math.max(
-            0,
-            Math.min(track.latitudes.length - 1, Math.round(run.orderIndex)),
-        );
-        const lat = Number.isFinite(run.lat) ? run.lat : track.latitudes[fallbackIndex];
-        const lon = Number.isFinite(run.lon) ? run.lon : track.longitudes[fallbackIndex];
-        return projectPoint(projection, lat, lon);
+        return projectPoint(projection, run.lat, run.lon);
     }
 
     // A settlement outranks any road, and a bigger road outranks a smaller one.
@@ -2225,7 +2155,7 @@
         } catch {
             throw new Error('That is not valid JSON.');
         }
-        const savedPlaces = Array.isArray(parsed) ? parsed : parsed?.savedPlaces;
+        const savedPlaces = parsed?.savedPlaces;
         if (!Array.isArray(savedPlaces)) {
             throw new Error('A backup must contain a "savedPlaces" array.');
         }
@@ -2705,10 +2635,7 @@
         closeObserver.observe(container, { childList: true, subtree: true });
     }
 
-    forgetRetiredSettings();
-    migrateSettingToUserscriptStorage(STORAGE_KEY.savedPlaces);
-    migrateSettingToUserscriptStorage(STORAGE_KEY.blockedNames);
-    migrateSettingToUserscriptStorage(STORAGE_KEY.rideNames);
+    await loadSettings();
     if (injectButton()) watchInjectedButton();
     else watchForEditForm();
 })();

@@ -170,7 +170,7 @@ export function loadRenamer(options = {}) {
     const userscriptStore = new Map(Object.entries(options.userscriptStorage || {}));
     const clipboard = [];
     const { document, input, label } = createEditPageDocument();
-    if (options.constructedStylesheets) document.adoptedStyleSheets = [];
+    document.adoptedStyleSheets = [];
 
     const respond = async (url, init, transport) => {
         requests.push({ url, init, transport });
@@ -214,10 +214,8 @@ export function loadRenamer(options = {}) {
                 inFlightRequests--;
             });
         },
-        // Present only when the scenario grants it, mirroring an install with
-        // and without @grant GM_xmlhttpRequest.
-        GM_xmlhttpRequest: options.userscriptManager
-            ? details => {
+        GM: {
+            xmlHttpRequest: details => {
                 inFlightRequests++;
                 respond(String(details.url), { method: details.method, body: details.data }, 'gm')
                     .then(async response => details.onload?.({
@@ -230,8 +228,12 @@ export function loadRenamer(options = {}) {
                     .finally(() => {
                         inFlightRequests--;
                     });
-            }
-            : undefined,
+            },
+            getValues: async keys => Object.fromEntries(
+                keys.map(key => [key, userscriptStore.get(key)]),
+            ),
+            setValue: async (key, value) => void userscriptStore.set(key, value),
+        },
         localStorage,
         document,
         DOMParser: FakeDOMParser,
@@ -243,25 +245,11 @@ export function loadRenamer(options = {}) {
                 Object.assign(this, init);
             }
         },
-        GM_getValue: options.userscriptManager
-            ? (key, fallback = undefined) =>
-                (userscriptStore.has(key) ? userscriptStore.get(key) : fallback)
-            : undefined,
-        GM_setValue: options.userscriptManager
-            ? (key, value) => void userscriptStore.set(key, value)
-            : undefined,
-        GM_deleteValue: options.userscriptManager
-            ? key => void userscriptStore.delete(key)
-            : undefined,
-        // Constructed stylesheets are the CSP-proof path; without them the
-        // script must fall back to a <style> tag.
-        CSSStyleSheet: options.constructedStylesheets
-            ? class CSSStyleSheet {
-                replaceSync(css) {
-                    this.cssText = css;
-                }
+        CSSStyleSheet: class CSSStyleSheet {
+            replaceSync(css) {
+                this.cssText = css;
             }
-            : undefined,
+        },
         navigator: { clipboard: { writeText: text => void clipboard.push(String(text)) } },
         alert: message => alerts.push(String(message)),
         window: {
@@ -276,9 +264,10 @@ export function loadRenamer(options = {}) {
     sandbox.globalThis = sandbox;
 
     FakeMutationObserver.instances.length = 0;
-    vm.runInNewContext(readFileSync(userscriptPath, 'utf8'), sandbox, {
+    const initialization = vm.runInNewContext(readFileSync(userscriptPath, 'utf8'), sandbox, {
         filename: 'activity-renamer.user.js',
     });
+    const ready = Promise.resolve(initialization);
 
     const settle = async (maxTurns = 5000) => {
         for (let turn = 0; turn < maxTurns; turn++) {
@@ -305,6 +294,7 @@ export function loadRenamer(options = {}) {
         userscriptStore,
         clipboard,
         observers: FakeMutationObserver.instances,
+        ready,
         settle,
         byId,
         get button() {
@@ -320,6 +310,7 @@ export function loadRenamer(options = {}) {
             return input.value;
         },
         async generate() {
+            await ready;
             this.button.click();
             await settle();
             return input.value;
@@ -339,7 +330,7 @@ export function loadScenario(fixtureName, overrides = {}) {
             activityId: fixture.activityId,
             gpx: toGpx(fixture.points),
             overpassResponses: [jsonResponse({ elements: overpassElements(fixture) })],
-            storage: fixture.savedPlaces
+            userscriptStorage: fixture.savedPlaces
                 ? { activity_renamer_saved_places_v1: JSON.stringify(fixture.savedPlaces) }
                 : {},
             ...overrides,

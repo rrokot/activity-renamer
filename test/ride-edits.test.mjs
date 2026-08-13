@@ -18,7 +18,7 @@ const RIDE_KEY = 'activity_renamer_ride_names_v1';
 
 test('leaves a blocked place out of the name', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        storage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
+        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
 
     const name = await renamer.generate();
@@ -29,7 +29,7 @@ test('leaves a blocked place out of the name', async () => {
 
 test('blocks by name regardless of spelling case', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        storage: { [BLOCKED_KEY]: JSON.stringify(['  gUHROW  ']) },
+        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['  gUHROW  ']) },
     });
 
     assert.doesNotMatch(await renamer.generate(), /Guhrow/);
@@ -37,7 +37,7 @@ test('blocks by name regardless of spelling case', async () => {
 
 test('a blocked start reads as the next real place', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        storage: { [BLOCKED_KEY]: JSON.stringify(['Cottbus']) },
+        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Cottbus']) },
     });
 
     const name = await renamer.generate();
@@ -50,7 +50,7 @@ test('a blocked start reads as the next real place', async () => {
 // one: the ✕ drops it, and the row it lands in offers to silence it for good.
 test('dropping a name then blocking it keeps the title rewritten', async () => {
     const fixture = loadFixture('loop-with-revisit');
-    const { renamer } = loadScenario('loop-with-revisit', { userscriptManager: true });
+    const { renamer } = loadScenario('loop-with-revisit');
 
     assert.equal(await renamer.generate(), fixture.expected);
     openDialog(renamer);
@@ -80,7 +80,7 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
 // map; adding it by hand is the way to overrule that for this ride.
 test('an added place survives the slots running out', async () => {
     const fixture = loadFixture('dense-settlements');
-    const { renamer } = loadScenario('dense-settlements', { userscriptManager: true });
+    const { renamer } = loadScenario('dense-settlements');
 
     assert.equal(await renamer.generate(), fixture.expected);
     assert.doesNotMatch(renamer.name, /Werben/);
@@ -106,7 +106,7 @@ test('an added place survives the slots running out', async () => {
 // The button that opens the dialog belongs to the ride it opens, so it counts
 // what this rider changed here — not how many places are saved for every ride.
 test('the button counts the changes this ride carries', async () => {
-    const { renamer } = loadScenario('dense-settlements', { userscriptManager: true });
+    const { renamer } = loadScenario('dense-settlements');
 
     await renamer.generate();
 
@@ -127,7 +127,7 @@ test('the button counts the changes this ride carries', async () => {
 test('a name added to one ride reaches no other activity', async () => {
     const fixture = loadFixture('dense-settlements');
     const { renamer } = loadScenario('dense-settlements', {
-        storage: {
+        userscriptStorage: {
             [RIDE_KEY]: JSON.stringify([
                 { activityId: '19000955531', kept: ['Werben'], dropped: [] },
             ]),
@@ -140,7 +140,6 @@ test('a name added to one ride reaches no other activity', async () => {
 
 test('adding a blocked place overrules the block for this ride only', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        userscriptManager: true,
         userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
 
@@ -156,11 +155,11 @@ test('adding a blocked place overrules the block for this ride only', async () =
     );
 });
 
-test('carries blocked names through a backup', () => {
+test('carries blocked names through a backup', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        userscriptManager: true,
         userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
+    await renamer.ready;
 
     openDialog(renamer);
     const backup = JSON.parse(dialogField(renamer, 'activity-renamer-backup-input').value);

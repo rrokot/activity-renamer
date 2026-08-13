@@ -34,7 +34,7 @@ const burgPlace = {
 // The dialog opens on the sentence it is about, then the places that could
 // join it, and only then the settings behind them.
 test('reads from this name down to the rarely touched settings', async () => {
-    const { renamer } = loadScenario('loop-with-revisit', { userscriptManager: true });
+    const { renamer } = loadScenario('loop-with-revisit');
 
     await renamer.generate();
     openDialog(renamer);
@@ -52,7 +52,7 @@ test('reads from this name down to the rarely touched settings', async () => {
 
 test('renames a place from its chip in the name', async () => {
     const fixture = loadFixture('loop-with-revisit');
-    const { renamer } = loadScenario('loop-with-revisit', { userscriptManager: true });
+    const { renamer } = loadScenario('loop-with-revisit');
 
     assert.equal(await renamer.generate(), fixture.expected);
     openDialog(renamer);
@@ -72,7 +72,7 @@ test('renames a place from its chip in the name', async () => {
 });
 
 test('reports a bad radius in the form and keeps the values', async () => {
-    const { renamer } = loadScenario('loop-with-revisit', { userscriptManager: true });
+    const { renamer } = loadScenario('loop-with-revisit');
     await renamer.generate();
     openDialog(renamer);
     nameChip(renamer, 'Burg').rename.click();
@@ -87,11 +87,11 @@ test('reports a bad radius in the form and keeps the values', async () => {
     assert.equal(renamer.userscriptStore.has(SAVED_PLACES_KEY), false);
 });
 
-test('deletes a saved place only after a second click', () => {
+test('deletes a saved place only after a second click', async () => {
     const renamer = loadRenamer({
-        userscriptManager: true,
         userscriptStorage: { [SAVED_PLACES_KEY]: JSON.stringify([burgPlace]) },
     });
+    await renamer.ready;
     openDialog(renamer);
 
     dialogButton(renamer, 'Delete').click();
@@ -103,11 +103,11 @@ test('deletes a saved place only after a second click', () => {
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(SAVED_PLACES_KEY)), []);
 });
 
-test('offers the saved places as a JSON backup', () => {
+test('offers the saved places as a JSON backup', async () => {
     const renamer = loadRenamer({
-        userscriptManager: true,
         userscriptStorage: { [SAVED_PLACES_KEY]: JSON.stringify([burgPlace]) },
     });
+    await renamer.ready;
 
     openDialog(renamer);
     const backup = JSON.parse(dialogField(renamer, 'activity-renamer-backup-input').value);
@@ -117,8 +117,9 @@ test('offers the saved places as a JSON backup', () => {
     assert.deepEqual(JSON.parse(renamer.clipboard[0]).savedPlaces, [burgPlace]);
 });
 
-test('imports a pasted backup after confirming', () => {
-    const renamer = loadRenamer({ userscriptManager: true });
+test('imports a pasted backup after confirming', async () => {
+    const renamer = loadRenamer({});
+    await renamer.ready;
     openDialog(renamer);
 
     typeInto(dialogField(renamer, 'activity-renamer-backup-input'),
@@ -133,11 +134,11 @@ test('imports a pasted backup after confirming', () => {
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(SAVED_PLACES_KEY)), [burgPlace]);
 });
 
-test('rejects a malformed backup without touching the saved places', () => {
+test('rejects a malformed backup without touching the saved places', async () => {
     const renamer = loadRenamer({
-        userscriptManager: true,
         userscriptStorage: { [SAVED_PLACES_KEY]: JSON.stringify([burgPlace]) },
     });
+    await renamer.ready;
     openDialog(renamer);
 
     typeInto(dialogField(renamer, 'activity-renamer-backup-input'), 'not json at all');
@@ -158,6 +159,7 @@ test('searching an address offers it as a place to save', async () => {
             address: { village: 'Burg (Spreewald)', county: 'Spree-Neiße', country: 'Deutschland' },
         }])],
     });
+    await renamer.ready;
 
     openDialog(renamer);
     typeInto(dialogField(renamer, 'activity-renamer-address-input'), 'Bismarckturm Burg');
@@ -170,5 +172,5 @@ test('searching an address offers it as a place to save', async () => {
     dialogButton(renamer, '☆ Save').click();
     submitForm(dialogField(renamer, 'activity-renamer-place-name-input'));
 
-    assert.equal(JSON.parse(renamer.localStorage.getItem(SAVED_PLACES_KEY))[0].name, 'Bismarckturm');
+    assert.equal(JSON.parse(renamer.userscriptStore.get(SAVED_PLACES_KEY))[0].name, 'Bismarckturm');
 });
