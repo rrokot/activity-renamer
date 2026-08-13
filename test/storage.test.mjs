@@ -5,8 +5,8 @@ import {
     loadScenario,
 } from './support/harness.mjs';
 
-const SAVED_PLACES_KEY = 'activity_renamer_saved_places_v1';
-const RIDE_KEY = 'activity_renamer_ride_names_v1';
+const FAVORITES_KEY = 'activity_renamer_saved_places_v1';
+const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -17,9 +17,9 @@ const burgPlace = {
     address: 'Burg (Spreewald)',
 };
 
-test('reads saved places from the userscript manager storage', async () => {
+test('reads Favorites from the userscript manager storage', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        userscriptStorage: { [SAVED_PLACES_KEY]: JSON.stringify([burgPlace]) },
+        userscriptStorage: { [FAVORITES_KEY]: JSON.stringify([burgPlace]) },
     });
 
     const name = await renamer.generate();
@@ -30,7 +30,7 @@ test('reads saved places from the userscript manager storage', async () => {
 test('reads the place-count override for this activity from userscript storage', async () => {
     const { renamer } = loadScenario('dense-settlements', {
         userscriptStorage: {
-            [RIDE_KEY]: JSON.stringify([{
+            [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532',
                 kept: [],
                 dropped: [],

@@ -2,7 +2,9 @@
 // element references must be looked up again after each click.
 
 export function openPanel(renamer) {
-    renamer.editNameButton.click();
+    if (renamer.panelToggleButton.getAttribute('aria-expanded') !== 'true') {
+        renamer.panelToggleButton.click();
+    }
     return renamer.panel;
 }
 
@@ -76,10 +78,11 @@ export function nameChip(renamer, name) {
     return { rename, drop: rename.parentNode.children[1] };
 }
 
-// A button in the "Also passed" row of a given place.
+// A button in the "Other places" row of a given place.
 export function passedRowButton(renamer, label, place) {
     const button = renamer.panel.querySelectorAll('button')
-        .filter(candidate => candidate.textContent === label)
+        .filter(candidate => candidate.textContent === label
+            || candidate.getAttribute('aria-label')?.startsWith(label))
         .find(candidate => candidate.title.includes(place));
     if (!button) throw new Error(`No "${label}" button for ${place}`);
     return button;

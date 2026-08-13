@@ -24,7 +24,14 @@ export class FakeElement {
         this.children = [];
         this.parentNode = null;
         this.attributes = new Map();
-        this.style = {};
+        this.style = {
+            setProperty(name, value) {
+                this[name] = String(value);
+            },
+            getPropertyValue(name) {
+                return this[name] || '';
+            },
+        };
         this.dataset = {};
         this.classList = new FakeClassList();
         this.listeners = new Map();
@@ -202,6 +209,10 @@ class FakeDocument extends FakeElement {
 
     createElement(tagName) {
         return new FakeElement(tagName, this);
+    }
+
+    createElementNS(namespace, tagName) {
+        return this.createElement(tagName);
     }
 
     getElementById(id) {

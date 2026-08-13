@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.11
+// @version      0.1.12
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -34,10 +34,11 @@
         minAutoPlaces: 3,
         autoNamePlaceCeiling: 7,
         minNamePlaces: 2,
+        namePlaceSliderMax: 10,
         autoPlaceSpacingKm: 4,
-        savedPlaceRadiusM: 200,
-        savedPlaceRadiusMinM: 10,
-        savedPlaceRadiusMaxM: 5000,
+        favoriteRadiusM: 200,
+        favoriteRadiusMinM: 10,
+        favoriteRadiusMaxM: 5000,
         rideHistory: 50,
         maxPlaceNameLength: 80,
         maxNameLength: 200,
@@ -73,9 +74,9 @@
         routeFeatures: 'activity_renamer_features_v2_',
     };
     const STORAGE_KEY = {
-        savedPlaces: 'activity_renamer_saved_places_v1',
+        favorites: 'activity_renamer_saved_places_v1',
         blockedNames: 'activity_renamer_blocked_names_v1',
-        rideNames: 'activity_renamer_ride_names_v1',
+        rideOverrides: 'activity_renamer_ride_names_v1',
     };
     const settings = new Map();
     // One stylesheet instead of a style object per element. It is adopted
@@ -91,57 +92,82 @@
     // it. They are used without a var() fallback: if Strava ever renames one,
     // the affected rule drops out rather than silently drifting out of date.
     const STYLES = `
-.activity-renamer-button.activity-renamer-button {
-    flex: 0 0 auto;
-    margin-left: auto;
-    padding: var(--space-3xs) var(--space-2xs);
-    font-size: 12px;
-    color: var(--color-corewhite);
-    vertical-align: middle;
-    background-color: var(--color-coreo3);
-    border: none;
-    border-radius: var(--border-radius-sm);
-    cursor: pointer;
-}
-.activity-renamer-button.activity-renamer-button:hover[data-state="idle"] {
-    background-color: var(--color-extendedorangeo2);
-}
-.activity-renamer-button.activity-renamer-button[data-state="loading"] {
-    background-color: var(--color-extendedneutraln4);
-}
-.activity-renamer-button.activity-renamer-button[data-state="success"] {
-    background-color: var(--color-extendedgreeng2);
-}
-.activity-renamer-button.activity-renamer-button[data-state="error"] {
-    background-color: var(--color-extendedredr3);
-}
-.activity-renamer-button--secondary.activity-renamer-button--secondary {
-    margin-left: var(--space-3xs);
-    color: var(--color-coreo3);
-    background-color: var(--color-corewhite);
-    border: var(--border-width-thin) solid var(--color-coreo3);
-}
-.activity-renamer-button--toggle.activity-renamer-button--toggle {
+.activity-renamer-control.activity-renamer-control {
+    box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-4xs);
-    min-width: 30px;
-    min-height: 26px;
+    min-height: 32px;
+    margin: 0;
+    padding: var(--space-3xs) var(--space-2xs);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    border: var(--border-width-thin) solid transparent;
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        transform 60ms ease;
 }
-.activity-renamer-button--toggle::before {
-    width: 7px;
-    height: 7px;
-    border-right: 2px solid currentColor;
-    border-bottom: 2px solid currentColor;
-    content: '';
-    transform: translateY(-2px) rotate(45deg);
+.activity-renamer-primary-button.activity-renamer-primary-button {
+    color: var(--color-corewhite);
+    vertical-align: middle;
+    background-color: var(--color-coreo3);
+    border-color: var(--color-coreo3);
+}
+.activity-renamer-primary-button.activity-renamer-primary-button:hover:not([disabled]):not([data-state]),
+.activity-renamer-primary-button.activity-renamer-primary-button:hover:not([disabled])[data-state="idle"] {
+    background-color: var(--color-extendedorangeo2);
+    border-color: var(--color-extendedorangeo2);
+}
+.activity-renamer-neutral-button.activity-renamer-neutral-button {
+    color: var(--color-extendedneutraln1);
+    background-color: var(--color-extendedneutraln6);
+    border-color: var(--color-extendedneutraln5);
+}
+.activity-renamer-neutral-button.activity-renamer-neutral-button:hover:not([disabled]) {
+    background-color: var(--color-extendedneutraln5);
+    border-color: var(--color-extendedneutraln4);
+}
+.activity-renamer-control.activity-renamer-control:active:not([disabled]) {
+    transform: translateY(1px);
+}
+.activity-renamer-button.activity-renamer-button {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+.activity-renamer-button.activity-renamer-button[data-state="loading"] {
+    background-color: var(--color-extendedneutraln4);
+    border-color: var(--color-extendedneutraln4);
+}
+.activity-renamer-button.activity-renamer-button[data-state="success"] {
+    background-color: var(--color-extendedgreeng2);
+    border-color: var(--color-extendedgreeng2);
+}
+.activity-renamer-button.activity-renamer-button[data-state="error"] {
+    background-color: var(--color-extendedredr3);
+    border-color: var(--color-extendedredr3);
+}
+.activity-renamer-button--toggle.activity-renamer-button--toggle {
+    margin-left: var(--space-3xs);
+    min-width: 32px;
+    width: 32px;
+    padding: 0;
+}
+.activity-renamer-button--toggle .activity-renamer-chevron {
+    width: 16px;
+    height: 16px;
+    transform: translateX(-2px);
+    transform-origin: center;
     transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.activity-renamer-button--toggle[aria-expanded="true"]::before {
-    transform: translateY(2px) rotate(225deg);
+.activity-renamer-button--toggle[aria-expanded="true"] .activity-renamer-chevron {
+    transform: translateX(-2px) rotate(180deg);
 }
-.activity-renamer-button--secondary.activity-renamer-button--secondary[disabled] {
+.activity-renamer-button--toggle.activity-renamer-button--toggle[disabled] {
     opacity: 0.5;
     cursor: default;
 }
@@ -157,53 +183,67 @@
     border-radius: var(--border-radius-md);
 }
 .activity-renamer-panel[aria-busy="true"] { cursor: progress; }
-.activity-renamer-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
-.activity-renamer-panel .activity-renamer-section-toggle {
+.activity-renamer-panel h4 {
     display: flex;
     align-items: center;
     gap: var(--space-2xs);
-    width: 100%;
-    min-height: 44px;
     margin: var(--space-md) 0 var(--space-3xs);
-    padding: var(--space-3xs) 0;
+}
+.activity-renamer-panel .activity-renamer-section-icon {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    color: inherit;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+}
+.activity-renamer-panel .activity-renamer-section-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    min-height: 32px;
+    margin: 0;
+    padding: 0;
     color: var(--color-extendedneutraln1);
     background: none;
     border: none;
-    font: inherit;
-    font-weight: 600;
-    text-align: left;
     cursor: pointer;
+    transition: box-shadow 120ms ease, color 120ms ease;
 }
-.activity-renamer-panel .activity-renamer-section-toggle::before {
-    width: 7px;
-    height: 7px;
-    border-right: 2px solid currentColor;
-    border-bottom: 2px solid currentColor;
-    content: '';
-    transform: rotate(-45deg);
+.activity-renamer-panel .activity-renamer-section-tab[aria-selected="true"] {
+    color: var(--color-coreo3);
+    box-shadow: inset 0 -2px 0 var(--color-coreo3);
 }
-.activity-renamer-panel .activity-renamer-section-toggle[aria-expanded="true"]::before {
-    transform: rotate(45deg);
+.activity-renamer-panel .activity-renamer-section-tab:hover {
+    color: var(--color-coreo3);
+}
+.activity-renamer-panel .activity-renamer-section-tabs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    margin: var(--space-2xs) 0 var(--space-3xs);
+}
+.activity-renamer-panel .activity-renamer-panel-button .activity-renamer-section-icon {
+    width: 16px;
+    height: 16px;
+}
+.activity-renamer-panel .activity-renamer-panel-button.activity-renamer-icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    width: 32px;
+    padding: 0;
 }
 .activity-renamer-panel .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
     color: var(--color-extendedneutraln3);
     font-size: 12px;
-}
-.activity-renamer-panel .activity-renamer-panel-button {
-    flex: 0 0 auto;
-    min-height: 32px;
-    padding: var(--space-3xs) var(--space-2xs);
-    color: var(--color-extendedneutraln1);
-    background-color: var(--color-extendedneutraln6);
-    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
-    border-radius: var(--border-radius-sm);
-    cursor: pointer;
-}
-.activity-renamer-panel .activity-renamer-panel-button--primary {
-    color: var(--color-corewhite);
-    background-color: var(--color-coreo3);
-    border-color: var(--color-coreo3);
 }
 .activity-renamer-panel .activity-renamer-panel-button[disabled] { opacity: 0.5; cursor: default; }
 .activity-renamer-panel .activity-renamer-field {
@@ -222,77 +262,72 @@
     align-items: center;
     gap: var(--space-2xs);
 }
-.activity-renamer-panel .activity-renamer-name-limit {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: var(--space-xs) 0 var(--space-sm);
+.activity-renamer-panel .activity-renamer-name-count {
+    margin: 0 0 var(--space-2xs);
 }
-.activity-renamer-panel .activity-renamer-name-limit-copy {
+.activity-renamer-panel .activity-renamer-name-count-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+}
+.activity-renamer-panel .activity-renamer-name-count-slider {
+    appearance: none;
     flex: 1 1 auto;
     min-width: 0;
+    height: 28px;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
 }
-.activity-renamer-panel .activity-renamer-name-limit-label {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: var(--space-3xs);
-    width: fit-content;
+.activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    background:
+        linear-gradient(
+            90deg,
+            transparent 0 var(--activity-renamer-slider-progress),
+            #e5e5e5 var(--activity-renamer-slider-progress) 100%
+        ),
+        linear-gradient(90deg, #f4f4f4, var(--color-coreo3));
+    border-radius: 2px;
 }
-.activity-renamer-panel .activity-renamer-name-limit label {
-    display: block;
-    font-weight: 600;
-}
-.activity-renamer-panel .activity-renamer-help {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+.activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-thumb {
+    appearance: none;
     width: 16px;
-    height: 16px;
-    color: var(--color-extendedneutraln3);
-    border: var(--border-width-thin) solid currentColor;
-    border-radius: 50%;
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 1;
-    cursor: help;
+    height: 28px;
+    margin-top: -12px;
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid #007fb6;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
-.activity-renamer-panel .activity-renamer-tooltip {
-    position: absolute;
-    z-index: 1;
-    top: calc(100% + var(--space-3xs));
-    left: 0;
-    width: 240px;
-    max-width: calc(100vw - (2 * var(--space-md)));
-    padding: var(--space-2xs);
-    color: var(--color-corewhite);
-    background: var(--color-extendedneutraln1);
-    border-radius: var(--border-radius-sm);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.35;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-2px);
-    transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1),
-        transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
-        visibility 120ms;
-    visibility: hidden;
+.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-track {
+    height: 4px;
+    background:
+        linear-gradient(
+            90deg,
+            transparent 0 var(--activity-renamer-slider-progress),
+            #e5e5e5 var(--activity-renamer-slider-progress) 100%
+        ),
+        linear-gradient(90deg, #f4f4f4, var(--color-coreo3));
+    border: 0;
+    border-radius: 2px;
 }
-.activity-renamer-panel .activity-renamer-help:hover + .activity-renamer-tooltip,
-.activity-renamer-panel .activity-renamer-help:focus-visible + .activity-renamer-tooltip {
-    opacity: 1;
-    transform: translateY(0);
-    visibility: visible;
+.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-thumb {
+    width: 16px;
+    height: 28px;
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid #007fb6;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
-.activity-renamer-panel .activity-renamer-name-limit .activity-renamer-note {
+.activity-renamer-panel .activity-renamer-name-count .activity-renamer-note {
     margin: var(--space-4xs) 0 0;
 }
-.activity-renamer-panel .activity-renamer-name-limit input {
+.activity-renamer-panel .activity-renamer-name-count input[type="number"] {
     flex: 0 0 auto;
-    min-width: 72px;
-    width: 72px;
+    min-width: 64px;
+    width: 64px;
 }
 .activity-renamer-panel .activity-renamer-status {
     min-height: 18px;
@@ -305,16 +340,21 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2xs);
-    padding: var(--space-2xs) 0;
+    column-gap: var(--space-2xs);
+    row-gap: var(--space-3xs);
+    padding: var(--space-3xs) 0;
     border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--color-extendedneutraln6);
 }
 .activity-renamer-panel .activity-renamer-row-text { flex: 1 1 180px; min-width: 0; }
-.activity-renamer-panel .activity-renamer-row-title { font-weight: 600; }
+.activity-renamer-panel .activity-renamer-row-title {
+    font-weight: 600;
+    line-height: 1.2;
+}
 .activity-renamer-panel .activity-renamer-row-details {
-    margin-top: var(--space-4xs);
+    margin-top: 0;
     color: var(--color-extendedneutraln3);
     font-size: 12px;
+    line-height: 1.2;
     overflow-wrap: anywhere;
 }
 .activity-renamer-panel .activity-renamer-row-actions {
@@ -383,8 +423,7 @@
 }
 .activity-renamer-panel button:focus-visible,
 .activity-renamer-panel input:focus-visible,
-.activity-renamer-panel a:focus-visible,
-.activity-renamer-panel .activity-renamer-help:focus-visible {
+.activity-renamer-panel a:focus-visible {
     outline: 2px solid var(--color-coreo3);
     outline-offset: 2px;
 }
@@ -394,7 +433,7 @@
     .activity-renamer-panel .activity-renamer-row {
         align-items: flex-start;
     }
-    .activity-renamer-panel .activity-renamer-name-limit { align-items: flex-start; }
+    .activity-renamer-panel .activity-renamer-name-count-controls { align-items: center; }
 }
 `;
 
@@ -409,7 +448,7 @@
     }
 
     const BUTTON_ID = 'activity-renamer-rename-btn';
-    const EDIT_NAME_BUTTON_ID = 'activity-renamer-edit-name-btn';
+    const PANEL_TOGGLE_BUTTON_ID = 'activity-renamer-panel-toggle';
     const NAME_PANEL_ID = 'activity-renamer-name-panel';
     const LOG_PREFIX = '[Activity Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([406, 429, 502, 503, 504]);
@@ -565,12 +604,12 @@
         return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
     }
 
-    // The single gate every saved place passes, whether loaded from storage or
+    // The single gate every Favorite passes, whether loaded from storage or
     // changed in the editor.
     function isUsableRadius(radiusM) {
         return Number.isFinite(radiusM)
-            && radiusM >= CONFIG.savedPlaceRadiusMinM
-            && radiusM <= CONFIG.savedPlaceRadiusMaxM;
+            && radiusM >= CONFIG.favoriteRadiusMinM
+            && radiusM <= CONFIG.favoriteRadiusMaxM;
     }
 
     function isUsableCoordinate(lat, lon) {
@@ -582,7 +621,7 @@
         return Boolean(name) && name.length <= CONFIG.maxPlaceNameLength;
     }
 
-    function normalizeSavedPlace(value) {
+    function normalizeFavorite(value) {
         if (!value || typeof value !== 'object') return null;
         const name = collapseWhitespace(value.name);
         const lat = Number(value.lat);
@@ -603,19 +642,19 @@
         };
     }
 
-    function loadSavedPlaces() {
-        const stored = readSetting(STORAGE_KEY.savedPlaces);
+    function loadFavorites() {
+        const stored = readSetting(STORAGE_KEY.favorites);
         if (!Array.isArray(stored)) return [];
-        return stored.map(normalizeSavedPlace).filter(Boolean);
+        return stored.map(normalizeFavorite).filter(Boolean);
     }
 
-    function storeSavedPlaces(savedPlaces) {
-        const normalized = savedPlaces.map(normalizeSavedPlace).filter(Boolean);
-        writeSetting(STORAGE_KEY.savedPlaces, normalized);
+    function storeFavorites(favorites) {
+        const normalized = favorites.map(normalizeFavorite).filter(Boolean);
+        writeSetting(STORAGE_KEY.favorites, normalized);
         return normalized;
     }
 
-    function createSavedPlaceId() {
+    function createFavoriteId() {
         return `place_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
@@ -665,10 +704,10 @@
     // a place this name must contain, a place it is better off without, and the
     // desired number of places. The store keeps one entry per activity, and
     // only for rides whose generated names were adjusted by hand.
-    const NO_RIDE_NAMES = { kept: [], dropped: [], placeCount: null };
+    const NO_RIDE_OVERRIDE = { kept: [], dropped: [], placeCount: null };
 
-    function loadRideEntries() {
-        const stored = readSetting(STORAGE_KEY.rideNames);
+    function loadRideOverrideEntries() {
+        const stored = readSetting(STORAGE_KEY.rideOverrides);
         if (!Array.isArray(stored)) return [];
         return stored
             .map(entry => ({
@@ -683,24 +722,24 @@
                     || entry.placeCount !== null));
     }
 
-    function loadRideNames(activityId = getActivityId()) {
-        if (!activityId) return NO_RIDE_NAMES;
-        const entry = loadRideEntries().find(item => item.activityId === activityId);
+    function loadRideOverride(activityId = getActivityId()) {
+        if (!activityId) return NO_RIDE_OVERRIDE;
+        const entry = loadRideOverrideEntries().find(item => item.activityId === activityId);
         return entry ? {
             kept: entry.kept,
             dropped: entry.dropped,
             placeCount: entry.placeCount,
-        } : NO_RIDE_NAMES;
+        } : NO_RIDE_OVERRIDE;
     }
 
-    function saveRideNames(activityId, { kept, dropped, placeCount = null }) {
-        const entries = loadRideEntries().filter(entry => entry.activityId !== activityId);
+    function saveRideOverride(activityId, { kept, dropped, placeCount = null }) {
+        const entries = loadRideOverrideEntries().filter(entry => entry.activityId !== activityId);
         if (kept.length > 0 || dropped.length > 0 || placeCount !== null) {
             const entry = { activityId, kept, dropped };
             if (placeCount !== null) entry.placeCount = placeCount;
             entries.push(entry);
         }
-        writeSetting(STORAGE_KEY.rideNames, entries.slice(-CONFIG.rideHistory));
+        writeSetting(STORAGE_KEY.rideOverrides, entries.slice(-CONFIG.rideHistory));
     }
 
     const withoutName = (names, name) =>
@@ -728,8 +767,8 @@
         const normalized = normalizeListedName(name);
         if (!activityId || !normalized) return false;
         const other = list === 'kept' ? 'dropped' : 'kept';
-        const current = loadRideNames(activityId);
-        saveRideNames(activityId, {
+        const current = loadRideOverride(activityId);
+        saveRideOverride(activityId, {
             [list]: withNameToggled(current[list], normalized),
             [other]: withoutName(current[other], normalized),
             placeCount: current.placeCount,
@@ -742,7 +781,7 @@
         const activityId = getActivityId();
         const normalized = normalizeListedName(name);
         if (!activityId || !normalized) return false;
-        const current = loadRideNames(activityId);
+        const current = loadRideOverride(activityId);
         const wasDropped = hasNameKey(normalized, nameKeys(current.dropped));
         const isBlocked = hasNameKey(normalized, nameKeys(loadBlockedNames()));
         if (!wasDropped || isBlocked) return toggleRideName('kept', normalized);
@@ -750,7 +789,7 @@
         // Adding back a place removed with ✕ is an undo, not a new forced
         // addition. Restore the slot and let the automatic selector own it
         // again, so the next ✕ can remove it normally.
-        saveRideNames(activityId, {
+        saveRideOverride(activityId, {
             kept: current.kept,
             dropped: withoutName(current.dropped, normalized),
             placeCount: current.placeCount === null ? null : current.placeCount + 1,
@@ -767,7 +806,7 @@
         const activityId = getActivityId();
         const normalized = normalizeListedName(name);
         if (!activityId || !normalized) return false;
-        const current = loadRideNames(activityId);
+        const current = loadRideOverride(activityId);
         if (hasNameKey(normalized, nameKeys(current.kept))) {
             return toggleRideName('kept', normalized);
         }
@@ -778,7 +817,7 @@
             names.filter(entry => entry.toLocaleLowerCase() === normalized.toLocaleLowerCase())
                 .length,
         );
-        saveRideNames(activityId, {
+        saveRideOverride(activityId, {
             kept: current.kept,
             dropped: withNameToggled(current.dropped, normalized),
             placeCount: Math.max(minimumNamePlaces(), names.length - removedOccurrences),
@@ -789,9 +828,9 @@
 
     function namingPreferences() {
         return {
-            savedPlaces: loadSavedPlaces(),
+            favorites: loadFavorites(),
             blockedNames: loadBlockedNames(),
-            ...loadRideNames(),
+            ...loadRideOverride(),
         };
     }
 
@@ -1153,7 +1192,7 @@
 
     // Every continuous stretch of track points within a feature's radius is one
     // visit, anchored at the closest point. Settlements, named roads and
-    // saved places all become visits through this single path.
+    // Favorites all become visits through this single path.
     function visitsFromDistances(track, distancesByIndex, description) {
         const visits = [];
         let visit = null;
@@ -1507,15 +1546,15 @@
         return data.map(candidateFromSearchResult).filter(Boolean);
     }
 
-    function closestSavedPlaceForPassage(passage, track, savedPlaces) {
+    function closestFavoriteForPassage(passage, track, favorites) {
         let best = null;
-        for (const savedPlace of savedPlaces) {
+        for (const favorite of favorites) {
             let distanceM = Infinity;
             let closestIndex = passage.start;
             for (let index = passage.start; index <= passage.end; index++) {
                 const pointDistanceM = haversineKm(
-                    savedPlace.lat,
-                    savedPlace.lon,
+                    favorite.lat,
+                    favorite.lon,
                     track.latitudes[index],
                     track.longitudes[index],
                 ) * 1000;
@@ -1525,19 +1564,19 @@
                 }
                 if (distanceM < 0.5) break;
             }
-            if (distanceM <= savedPlace.radiusM && (!best || distanceM < best.distanceM)) {
-                best = { savedPlace, distanceM, index: closestIndex };
+            if (distanceM <= favorite.radiusM && (!best || distanceM < best.distanceM)) {
+                best = { favorite, distanceM, index: closestIndex };
             }
         }
         return best;
     }
 
-    function savedPlaceVisits(track, savedPlaces) {
-        return savedPlaces
-            .flatMap(savedPlace => visitsFromDistances(
+    function favoriteVisits(track, favorites) {
+        return favorites
+            .flatMap(favorite => visitsFromDistances(
                 track,
-                trackDistancesToPoint(track, savedPlace.lat, savedPlace.lon, savedPlace.radiusM),
-                { savedPlace },
+                trackDistancesToPoint(track, favorite.lat, favorite.lon, favorite.radiusM),
+                { favorite },
             ))
             .sort(byTrackOrder);
     }
@@ -1703,10 +1742,10 @@
         items.flatMap((item, index) => (predicate(item, index) ? [index] : []));
 
     // Settlements have absolute priority. Named roads fill only unused slots.
-    // Interior saved places and kept places occupy normal places in the limit;
-    // the first and last displayed route points do not consume it.
+    // Favorites and manually added places are selected before automatic
+    // candidates, but a manual place count remains the final number of parts.
     function compactRouteRuns(allRuns, track, placeCount = null) {
-        const isForced = run => Boolean(run.saved || run.kept);
+        const isForced = run => Boolean(run.favorite || run.kept);
         // A ride starts and finishes somewhere with a name people recognise, so
         // a street the route merely began on is dropped rather than promoted
         // into the first or last slot.
@@ -1726,18 +1765,25 @@
             endpointIndices.add(runs.indexOf(allRuns[startIndex]));
             endpointIndices.add(runs.indexOf(allRuns[endIndex]));
         }
-        const interiorForcedCount = runs.reduce(
-            (count, run, index) =>
-                count + Number(isForced(run) && !endpointIndices.has(index)),
-            0,
-        );
+        const forcedIndices = indicesWhere(runs, (run, index) =>
+            isForced(run) && !endpointIndices.has(index));
         const namePlaceLimit = placeCount ?? Math.max(
             minimumNamePlaces(),
             Math.floor(CONFIG.autoNamePlaceCeiling),
         );
+        let selectedForced = new Set(forcedIndices);
+        if (placeCount !== null && endpointIndices.size + selectedForced.size > namePlaceLimit) {
+            selectedForced = fillCoverageSelection(
+                runs,
+                track,
+                forcedIndices,
+                new Set(),
+                Math.max(0, namePlaceLimit - endpointIndices.size),
+            );
+        }
         const availableAutomaticSlots = Math.max(
             0,
-            namePlaceLimit - endpointIndices.size - interiorForcedCount,
+            namePlaceLimit - endpointIndices.size - selectedForced.size,
         );
         // The route-length calculation owns the automatic result only. Once
         // the rider enters a count, every remaining slot is available to the
@@ -1745,7 +1791,7 @@
         const automaticLimit = placeCount === null
             ? Math.min(availableAutomaticSlots, Math.max(
                 0,
-                automaticPlaceLimit(track, namePlaceLimit) - interiorForcedCount,
+                automaticPlaceLimit(track, namePlaceLimit) - selectedForced.size,
             ))
             : availableAutomaticSlots;
         // What the automatic slots may still choose from: everything the name
@@ -1794,16 +1840,18 @@
         }
         return runs
             .filter((run, index) =>
-                endpointIndices.has(index) || isForced(run) || selectedAutomatic.has(index))
+                endpointIndices.has(index)
+                || selectedForced.has(index)
+                || selectedAutomatic.has(index))
             .map(run => ({ ...run }));
     }
 
     // Every event that may reach the name, in track order: one per passage the
-    // user has not blocked, plus the saved places the passages never covered.
+    // user has not blocked, plus the Favorites the passages never covered.
     // `suppressed` collects what the block list took out, for the log.
     function routeEvents(passages, track, preferences, shouldLog) {
-        const { savedPlaces, blockedNames, kept: keptNames, dropped } = preferences;
-        const visits = savedPlaceVisits(track, savedPlaces);
+        const { favorites, blockedNames, kept: keptNames, dropped } = preferences;
+        const visits = favoriteVisits(track, favorites);
         const blockedKeys = nameKeys(blockedNames);
         const keptKeys = nameKeys(keptNames);
         const droppedKeys = nameKeys(dropped);
@@ -1819,8 +1867,8 @@
         };
 
         for (const passage of passages) {
-            const match = closestSavedPlaceForPassage(passage, track, savedPlaces);
-            const name = match?.savedPlace.name || passage.baseName;
+            const match = closestFavoriteForPassage(passage, track, favorites);
+            const name = match?.favorite.name || passage.baseName;
             if (!name) continue;
             const { kept, hidden } = nameState(name);
             if (hidden) {
@@ -1830,14 +1878,14 @@
 
             if (match) {
                 for (const visit of visits) {
-                    if (visit.savedPlace.id === match.savedPlace.id
+                    if (visit.favorite.id === match.favorite.id
                         && trackRangesOverlap(visit, passage)) {
                         coveredVisits.add(visit);
                     }
                 }
                 if (shouldLog) {
-                    log(`Saved place ${rangeLabel(passage)}: ${match.savedPlace.name}`
-                        + ` (${match.distanceM.toFixed(0)} m from saved address)`);
+                    log(`Favorite ${rangeLabel(passage)}: ${match.favorite.name}`
+                        + ` (${match.distanceM.toFixed(0)} m from favorite address)`);
                 }
             }
 
@@ -1846,11 +1894,11 @@
                 km: passage.km,
                 fromKm: passage.fromKm,
                 toKm: passage.toKm,
-                saved: Boolean(match),
+                favorite: Boolean(match),
                 orderIndex: match?.index ?? passage.anchor,
-                lat: match?.savedPlace.lat ?? passage.lat,
-                lon: match?.savedPlace.lon ?? passage.lon,
-                featureKind: match ? 'saved' : passage.featureKind,
+                lat: match?.favorite.lat ?? passage.lat,
+                lon: match?.favorite.lon ?? passage.lon,
+                featureKind: match ? 'favorite' : passage.featureKind,
                 roadType: passage.roadType || null,
                 kept,
             });
@@ -1858,25 +1906,25 @@
 
         for (const visit of visits) {
             if (coveredVisits.has(visit)) continue;
-            const { kept, hidden } = nameState(visit.savedPlace.name);
+            const { kept, hidden } = nameState(visit.favorite.name);
             if (hidden) {
-                suppressed[hidden].add(visit.savedPlace.name);
+                suppressed[hidden].add(visit.favorite.name);
                 continue;
             }
             if (shouldLog) {
-                log(`Saved place ${rangeLabel(visit)}: ${visit.savedPlace.name}`
-                    + ` (${visit.distanceM.toFixed(0)} m from saved address; full-track visit)`);
+                log(`Favorite ${rangeLabel(visit)}: ${visit.favorite.name}`
+                    + ` (${visit.distanceM.toFixed(0)} m from favorite address; full-track visit)`);
             }
             events.push({
-                name: visit.savedPlace.name,
+                name: visit.favorite.name,
                 km: visit.km,
                 fromKm: visit.fromKm,
                 toKm: visit.toKm,
-                saved: true,
+                favorite: true,
                 orderIndex: visit.index,
-                lat: visit.savedPlace.lat,
-                lon: visit.savedPlace.lon,
-                featureKind: 'saved',
+                lat: visit.favorite.lat,
+                lon: visit.favorite.lon,
+                featureKind: 'favorite',
                 roadType: null,
                 kept,
             });
@@ -1886,7 +1934,7 @@
         return { events, suppressed };
     }
 
-    // Passing the same place twice in a row is one mention; a saved place or a
+    // Passing the same place twice in a row is one mention; a Favorite or a
     // settlement outranks the road name it shares its stretch of track with.
     function mergeAdjacentEvents(events) {
         const runs = [];
@@ -1899,10 +1947,10 @@
             last.km += event.km;
             last.fromKm = Math.min(last.fromKm, event.fromKm);
             last.toKm = Math.max(last.toKm, event.toKm);
-            last.saved ||= event.saved;
+            last.favorite ||= event.favorite;
             last.kept ||= event.kept;
-            if (event.saved) {
-                last.featureKind = 'saved';
+            if (event.favorite) {
+                last.featureKind = 'favorite';
             } else if (event.featureKind === 'place' && last.featureKind === 'road') {
                 last.featureKind = 'place';
             }
@@ -1914,14 +1962,14 @@
     // block list took out, and what did not fit.
     function logRouteSelection(compacted, runs, suppressed, track) {
         const count = predicate => compacted.filter(predicate).length;
-        const places = count(run => !run.saved && run.featureKind === 'place');
-        const roads = count(run => !run.saved && run.featureKind === 'road');
-        const savedPlaces = count(run => run.saved);
-        const kept = count(run => run.kept && !run.saved);
+        const places = count(run => !run.favorite && run.featureKind === 'place');
+        const roads = count(run => !run.favorite && run.featureKind === 'road');
+        const favorites = count(run => run.favorite);
+        const kept = count(run => run.kept && !run.favorite);
         log(`Map extent ${routeMapExtentKm(track).toFixed(1)} km: `
             + `${places} settlements`
             + (roads ? ` + ${roads} named-road fallbacks` : '')
-            + ` + ${savedPlaces} saved places`
+            + ` + ${favorites} Favorites`
             + (kept ? ` (${kept} kept for this ride)` : ''));
         if (suppressed.blocked.size > 0) {
             log(`Blocked from the name: ${Array.from(suppressed.blocked).join(', ')}`);
@@ -2009,15 +2057,10 @@
         };
     }
 
-    // The button opens the name of the ride in front of the rider, so what it
-    // counts is what that rider changed about it by hand — not how many places
-    // are saved for every other ride.
-    function updateEditNameButton() {
-        const button = document.getElementById(EDIT_NAME_BUTTON_ID);
+    // The compact chevron only reflects whether the inline panel is open.
+    function updatePanelToggleButton() {
+        const button = document.getElementById(PANEL_TOGGLE_BUTTON_ID);
         if (!button) return;
-        const { kept, dropped, placeCount } = loadRideNames();
-        const edits = kept.length + dropped.length + Number(placeCount !== null);
-        button.textContent = edits > 0 ? String(edits) : '';
         const ready = lastRouteAnalysis?.activityId === getActivityId();
         const panelOpen = namePanelState?.activityId === getActivityId() && namePanelState.open;
         button.disabled = false;
@@ -2033,9 +2076,7 @@
             button.setAttribute('aria-label', button.title);
             return;
         }
-        button.title = edits > 0
-            ? `Open Activity Renamer — ${edits} ride change${edits === 1 ? '' : 's'}`
-            : 'Open Activity Renamer';
+        button.title = 'Open Activity Renamer';
         button.setAttribute('aria-label', button.title);
     }
 
@@ -2071,67 +2112,51 @@
         );
     }
 
-    // The number input must stop where the naming rules stop. Computing the
-    // result at the absolute floor accounts for protected endpoints, Favorites
-    // and manual additions instead of pretending every ride can reach two.
-    function minimumCurrentNamePlaces() {
-        if (!lastRouteAnalysis || lastRouteAnalysis.activityId !== getActivityId()) {
-            return minimumNamePlaces();
-        }
-        return activityNamesFromPassages(
-            lastRouteAnalysis.passages,
-            lastRouteAnalysis.track,
-            { ...namingPreferences(), placeCount: minimumNamePlaces() },
-        ).length;
-    }
-
-    // Every edit rewrites the title in place, so the effect of a click is
-    // visible immediately — including on the button, which counts the changes
-    // this ride carries.
+    // Every edit rewrites the title in place, so its effect is visible immediately.
     function refreshActivityName() {
         const names = currentActivityNames();
         if (names && setActivityName(names)) log(`Name updated: ${names.join(' - ')}`);
-        updateEditNameButton();
+        updatePanelToggleButton();
     }
 
-    function savedPlaceFromForm(existing, passage, name, radiusText) {
+    function favoriteFromForm(existing, passage, name, radiusText) {
         const trimmedName = collapseWhitespace(name);
         if (!isUsablePlaceName(trimmedName)) {
             throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
         }
         const radiusM = Number(String(radiusText).replace(',', '.'));
         if (!isUsableRadius(radiusM)) {
-            throw new Error(`The radius must be a number from ${CONFIG.savedPlaceRadiusMinM}`
-                + ` to ${CONFIG.savedPlaceRadiusMaxM} metres.`);
+            throw new Error(`The radius must be a number from ${CONFIG.favoriteRadiusMinM}`
+                + ` to ${CONFIG.favoriteRadiusMaxM} metres.`);
         }
 
-        const savedPlace = normalizeSavedPlace({
-            id: existing?.id || createSavedPlaceId(),
+        const favorite = normalizeFavorite({
+            id: existing?.id || createFavoriteId(),
             name: trimmedName,
             lat: existing?.lat ?? passage?.lat,
             lon: existing?.lon ?? passage?.lon,
             radiusM,
             address: existing?.address || passage?.address || passage?.baseName || '',
         });
-        if (!savedPlace) throw new Error('That place has no usable coordinates.');
-        return savedPlace;
+        if (!favorite) throw new Error('That place has no usable coordinates.');
+        return favorite;
     }
 
-    function storeSavedPlace(savedPlace) {
-        const savedPlaces = loadSavedPlaces();
-        const index = savedPlaces.findIndex(item => item.id === savedPlace.id);
+    function storeFavorite(favorite) {
+        const favorites = loadFavorites();
+        const index = favorites.findIndex(item => item.id === favorite.id);
         if (index >= 0) {
-            savedPlaces[index] = savedPlace;
+            favorites[index] = favorite;
         } else {
-            savedPlaces.push(savedPlace);
+            favorites.push(favorite);
         }
-        storeSavedPlaces(savedPlaces);
+        storeFavorites(favorites);
         refreshActivityName();
         return true;
     }
 
-    function removeSavedPlace(savedPlaceId) {
-        storeSavedPlaces(loadSavedPlaces().filter(item => item.id !== savedPlaceId));
+    function removeFavorite(favoriteId) {
+        storeFavorites(loadFavorites().filter(item => item.id !== favoriteId));
         refreshActivityName();
         return true;
     }
@@ -2157,7 +2182,9 @@
     function createPanelButton(text, primary = false) {
         return createElement(
             'button',
-            `activity-renamer-panel-button${primary ? ' activity-renamer-panel-button--primary' : ''}`,
+            `activity-renamer-control activity-renamer-panel-button ${primary
+                ? 'activity-renamer-primary-button'
+                : 'activity-renamer-neutral-button'}`,
             { type: 'button', textContent: text },
         );
     }
@@ -2180,19 +2207,66 @@
         });
     }
 
-    function createSectionTitle(text) {
-        return createElement('h4', '', { textContent: text });
+    const SECTION_ICON_PATHS = {
+        add: ['M12 5v14M5 12h14'],
+        places: [
+            'M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z',
+            'M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
+        ],
+        roads: ['M8 3 6 21M16 3l2 18M12 3v4M12 10v4M12 17v4'],
+        favorites: ['m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z'],
+        excluded: ['M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM5.6 5.6l12.8 12.8'],
+    };
+
+    function createSectionIcon(name) {
+        const namespace = 'http://www.w3.org/2000/svg';
+        const icon = document.createElementNS(namespace, 'svg');
+        icon.setAttribute('class', 'activity-renamer-section-icon');
+        icon.setAttribute('viewBox', '0 0 24 24');
+        icon.setAttribute('aria-hidden', 'true');
+        icon.setAttribute('focusable', 'false');
+        for (const data of SECTION_ICON_PATHS[name] || []) {
+            const path = document.createElementNS(namespace, 'path');
+            path.setAttribute('d', data);
+            icon.append(path);
+        }
+        return icon;
+    }
+
+    // Reuse Strava's own caret component at its native size.
+    function createStravaChevron() {
+        const wrapper = createElement(
+            'span',
+            'app-icon-wrapper activity-renamer-chevron',
+        );
+        wrapper.setAttribute('aria-hidden', 'true');
+        wrapper.append(createElement('span', 'app-icon icon-caret-down icon-dark'));
+        return wrapper;
+    }
+
+    function decorateIconButton(button, icon, label) {
+        button.className += ' activity-renamer-icon-button';
+        button.replaceChildren(
+            createSectionIcon(icon),
+            createElement('span', 'activity-renamer-sr-only', { textContent: label }),
+        );
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        return button;
+    }
+
+    function createIconPanelButton(icon, label, primary = false) {
+        return decorateIconButton(createPanelButton(label, primary), icon, label);
+    }
+
+    function createSectionTitle(text, icon = null) {
+        const title = createElement('h4', '', { textContent: text });
+        if (icon) title.append(createSectionIcon(icon));
+        return title;
     }
 
     function createPanelNote(text) {
         return createElement('p', 'activity-renamer-note', { textContent: text });
-    }
-
-    // Every list in the panel reads the same way: a counted title, one line of
-    // guidance while it is empty, one row per entry once it is not.
-    function appendListSection(panel, title, items, { empty, row }) {
-        panel.append(createSectionTitle(`${title} (${items.length})`));
-        appendListContents(panel, items, { empty, row });
     }
 
     function appendListContents(panel, items, { empty, row }) {
@@ -2217,9 +2291,8 @@
         container.append(row);
     }
 
-    // The name and radius of a saved place are edited in the panel itself: modal
-    // prompts stack up, cannot show what is being edited and are blocked in
-    // some browsers.
+    // The name and radius of a Favorite are edited in context, under the item
+    // that opened the editor.
     function appendPlaceEditor(panel, state, render) {
         const editing = state.editing;
         if (!editing) return;
@@ -2243,7 +2316,7 @@
             id: 'activity-renamer-place-radius-input',
             className: 'activity-renamer-field activity-renamer-field--narrow',
             value: state.editing.radiusM,
-            placeholder: `Radius ${CONFIG.savedPlaceRadiusMinM}–${CONFIG.savedPlaceRadiusMaxM} m`,
+            placeholder: `Radius ${CONFIG.favoriteRadiusMinM}–${CONFIG.favoriteRadiusMaxM} m`,
         });
         radiusInput.setAttribute('aria-describedby', 'activity-renamer-place-status');
         radiusInput.addEventListener('input', () => {
@@ -2268,7 +2341,7 @@
         );
         const save = () => {
             try {
-                storeSavedPlace(savedPlaceFromForm(
+                storeFavorite(favoriteFromForm(
                     editing.existing,
                     editing.passage,
                     state.editing.name,
@@ -2310,7 +2383,7 @@
     }
 
     // The search reports itself through the same state the panel renders from,
-    // so a failure reads as a line under the field instead of a modal.
+    // so a failure reads as a line under the field where it can be corrected.
     async function runAddressSearch(state, render) {
         const query = collapseWhitespace(state.search.query);
         if (!query) {
@@ -2393,56 +2466,80 @@
         panel.append(note, controls, status, results, attribution);
     }
 
-    function appendDisclosure(panel, state, render, {
-        id, label, count, stateKey, appendContents,
+    const COLLECTION_TAB_IDS = ['places', 'roads', 'favorites', 'never'];
+
+    function appendCollectionTab(panel, state, render, tablist, {
+        id, label, icon, appendContents,
     }) {
-        const toggle = createPanelButton(`${label} (${count})`);
-        toggle.id = `activity-renamer-${id}-toggle`;
-        toggle.className = 'activity-renamer-section-toggle';
-        toggle.setAttribute('aria-expanded', String(state[stateKey]));
-        toggle.setAttribute('aria-controls', `activity-renamer-${id}`);
-        toggle.addEventListener('click', () => {
-            state[stateKey] = !state[stateKey];
-            render();
+        const selected = state.activeCollection === id;
+        const tab = createPanelButton(label);
+        tab.id = `activity-renamer-${id}-tab`;
+        tab.className = 'activity-renamer-section-tab';
+        decorateIconButton(tab, icon, label);
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', String(selected));
+        tab.setAttribute('aria-controls', `activity-renamer-${id}`);
+        tab.tabIndex = selected ? 0 : -1;
+        tab.addEventListener('click', () => {
+            if (state.activeCollection === id) return;
+            state.activeCollection = id;
+            render(tab.id);
         });
-        panel.append(toggle);
-        if (!state[stateKey]) return;
+        tab.addEventListener('keydown', event => {
+            const currentIndex = COLLECTION_TAB_IDS.indexOf(id);
+            const nextIndex = event.key === 'ArrowRight'
+                ? (currentIndex + 1) % COLLECTION_TAB_IDS.length
+                : event.key === 'ArrowLeft'
+                    ? (currentIndex - 1 + COLLECTION_TAB_IDS.length) % COLLECTION_TAB_IDS.length
+                    : event.key === 'Home' ? 0
+                        : event.key === 'End' ? COLLECTION_TAB_IDS.length - 1
+                            : -1;
+            if (nextIndex < 0) return;
+            event.preventDefault();
+            state.activeCollection = COLLECTION_TAB_IDS[nextIndex];
+            render(`activity-renamer-${state.activeCollection}-tab`);
+        });
+        tablist.append(tab);
+        if (!selected) return;
 
         const container = createElement('div', '', { id: `activity-renamer-${id}` });
+        container.setAttribute('role', 'tabpanel');
+        container.setAttribute('aria-labelledby', tab.id);
         appendContents(container, state, render);
         panel.append(container);
     }
 
-    function appendFavorites(panel, state, render) {
-        appendDisclosure(panel, state, render, {
+    function appendFavorites(panel, state, render, tablist) {
+        appendCollectionTab(panel, state, render, tablist, {
             id: 'favorites',
             label: 'Favorites',
-            count: loadSavedPlaces().length,
-            stateKey: 'favoritesOpen',
+            icon: 'favorites',
             appendContents: appendFavoriteContents,
         });
     }
 
-    function appendNeverInName(panel, state, render) {
-        appendDisclosure(panel, state, render, {
+    function appendNeverInName(panel, state, render, tablist) {
+        appendCollectionTab(panel, state, render, tablist, {
             id: 'never',
-            label: 'Never in a name',
-            count: loadBlockedNames().length,
-            stateKey: 'neverOpen',
+            label: 'Excluded',
+            icon: 'excluded',
             appendContents: appendBlockedNameContents,
         });
     }
 
-    // The panel opens on the route name and the landmarks that can join it.
-    // Favorites and global exclusions remain separate and collapsed until used.
-    const PANEL_SECTIONS = [
-        appendThisName,
-        appendNamePlaceLimit,
-        appendAlsoPassed,
-        appendRoads,
-        appendFavorites,
-        appendNeverInName,
-    ];
+    // The four collections form one tab set, so exactly one is always visible.
+    function appendCollectionSections(panel, state, render) {
+        const tablist = createElement('div', 'activity-renamer-section-tabs');
+        tablist.setAttribute('role', 'tablist');
+        tablist.setAttribute('aria-label', 'Landmark collections');
+        panel.append(tablist);
+        appendAlsoPassed(panel, state, render, tablist);
+        appendRoads(panel, state, render, tablist);
+        appendFavorites(panel, state, render, tablist);
+        appendNeverInName(panel, state, render, tablist);
+    }
+
+    const PANEL_SECTIONS = [appendThisName, appendCollectionSections];
 
     function panelFocusableElements(panel) {
         return Array.from(panel.querySelectorAll('button, input, textarea, select, a'))
@@ -2481,10 +2578,8 @@
             view: null,
             editing: null,
             confirmingDeleteId: null,
-            roadsOpen: false,
-            favoritesOpen: false,
-            neverOpen: false,
-            limitError: '',
+            activeCollection: 'places',
+            countError: '',
             search: { query: '', candidates: [], status: '', error: false, busy: false },
         };
     }
@@ -2539,7 +2634,7 @@
         state.open = !state.open;
         if (state.open) renderNamePanel();
         else document.getElementById(NAME_PANEL_ID)?.remove();
-        updateEditNameButton();
+        updatePanelToggleButton();
     }
 
     // What the panel is looking at: the ride analyzed for this page, the name
@@ -2548,19 +2643,19 @@
         const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
         if (!analysis) return null;
 
-        const savedPlaces = loadSavedPlaces();
+        const favorites = loadFavorites();
         const landmarks = analysis.passages.map(passage => {
-            const match = closestSavedPlaceForPassage(passage, analysis.track, savedPlaces);
-            return { passage, match, name: match?.savedPlace.name || passage.baseName };
+            const match = closestFavoriteForPassage(passage, analysis.track, favorites);
+            return { passage, match, name: match?.favorite.name || passage.baseName };
         });
         const byName = new Map();
         for (const landmark of landmarks) {
             if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
         }
-        return { names: currentActivityNames() || [], landmarks, byName, savedPlaces };
+        return { names: currentActivityNames() || [], landmarks, byName, favorites };
     }
 
-    // One place builds the editor state, so a chip, a landmark, a saved place
+    // One place builds the editor state, so a chip, a landmark, a Favorite
     // and a search result all open the same form — under whatever was clicked.
     function openPlaceEditor(state, render, { existing = null, passage = null, anchor }) {
         state.editing = {
@@ -2568,7 +2663,7 @@
             passage,
             anchor,
             name: existing?.name || passage?.baseName || '',
-            radiusM: String(existing?.radiusM ?? CONFIG.savedPlaceRadiusM),
+            radiusM: String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
             error: '',
         };
         state.confirmingDeleteId = null;
@@ -2577,8 +2672,8 @@
 
     function appendEditorAt(container, state, render, anchor) {
         const editing = state.editing;
-        const isSameSavedPlace = editing?.existing?.id && editing.existing.id === anchor?.id;
-        if (editing?.anchor === anchor || isSameSavedPlace) {
+        const isSameFavorite = editing?.existing?.id && editing.existing.id === anchor?.id;
+        if (editing?.anchor === anchor || isSameFavorite) {
             appendPlaceEditor(container, state, render);
         }
     }
@@ -2596,50 +2691,54 @@
         }
 
         if (view.names.length === 0) {
+            appendNamePlaceCount(panel, state, render);
             panel.append(createPanelNote('Nothing is in the name. Add a landmark below.'));
         } else {
             const chips = createElement('div', 'activity-renamer-chips');
-            for (const name of view.names) {
-                chips.append(createNameChip(name, view, state, render));
-            }
+            const updateChips = () => {
+                const currentView = currentRouteView();
+                if (!currentView) return;
+                state.view = currentView;
+                chips.replaceChildren(...currentView.names.map(name =>
+                    createNameChip(name, currentView, state, render)));
+            };
+            updateChips();
+            appendNamePlaceCount(panel, state, render, updateChips);
             panel.append(chips);
         }
 
         appendEditorAt(panel, state, render, NAME_ANCHOR);
     }
 
-    function appendNamePlaceLimit(panel, state, render) {
+    function appendNamePlaceCount(panel, state, render, updateChips = () => {}) {
         if (!state.view) return;
         const inputId = 'activity-renamer-name-place-count';
+        const sliderId = 'activity-renamer-name-place-count-slider';
         const noteId = 'activity-renamer-name-place-count-note';
-        const tooltipId = 'activity-renamer-name-place-count-tooltip';
-        const minimum = minimumCurrentNamePlaces();
-        const helpText = 'Calculated for this route. Change it to override this activity, '
-            + 'or clear it to use the automatic count. Start, finish, Favorites and manual '
-            + `additions are always kept. This name cannot contain fewer than ${minimum}.`;
-        const section = createElement('div', 'activity-renamer-name-limit');
-        const copy = createElement('div', 'activity-renamer-name-limit-copy');
-        const labelRow = createElement('div', 'activity-renamer-name-limit-label');
-        const label = createElement('label', '', { textContent: 'Places in name' });
-        label.setAttribute('for', inputId);
-        const help = createElement('span', 'activity-renamer-help', {
-            textContent: 'i',
-            tabIndex: 0,
+        const minimum = minimumNamePlaces();
+        const sliderMaximum = Math.max(minimum, Math.floor(CONFIG.namePlaceSliderMax));
+        const section = createElement('div', 'activity-renamer-name-count');
+        const controls = createElement('div', 'activity-renamer-name-count-controls');
+        const sliderLabel = createFieldLabel(sliderId, 'Places in name');
+        const slider = createPanelInput({
+            id: sliderId,
+            type: 'range',
+            min: String(minimum),
+            max: String(sliderMaximum),
+            step: '1',
+            value: String(Math.min(sliderMaximum, Math.max(minimum, state.view.names.length))),
         });
-        help.setAttribute('aria-label', 'About places in name');
-        help.setAttribute('aria-describedby', tooltipId);
-        const tooltip = createElement('span', 'activity-renamer-tooltip', { textContent: helpText });
-        tooltip.id = tooltipId;
-        tooltip.setAttribute('role', 'tooltip');
-        labelRow.append(label, help, tooltip);
-        copy.append(labelRow);
-        if (state.limitError) {
-            const note = createPanelNote(state.limitError);
-            note.className = 'activity-renamer-note activity-renamer-status--error';
-            note.id = noteId;
-            copy.append(note);
-        }
-
+        slider.className = 'activity-renamer-name-count-slider';
+        const syncSliderProgress = () => {
+            const progress = (Number(slider.value) - minimum)
+                / Math.max(1, sliderMaximum - minimum) * 100;
+            slider.style.setProperty(
+                '--activity-renamer-slider-progress',
+                `${Math.max(0, Math.min(100, progress))}%`,
+            );
+        };
+        syncSliderProgress();
+        const inputLabel = createFieldLabel(inputId, 'Places in name');
         const input = createPanelInput({
             id: inputId,
             type: 'number',
@@ -2648,70 +2747,90 @@
             inputMode: 'numeric',
             value: String(state.view.names.length),
         });
-        input.setAttribute(
-            'aria-describedby',
-            state.limitError ? `${tooltipId} ${noteId}` : tooltipId,
-        );
-        const applyValue = ({ allowReset, reportInvalid }) => {
+        if (state.countError) input.setAttribute('aria-describedby', noteId);
+        const applyValue = (rawValue, { allowReset, reportInvalid }) => {
             const activityId = getActivityId();
-            const current = loadRideNames(activityId);
-            if (input.value.trim() === '') {
+            const current = loadRideOverride(activityId);
+            if (rawValue.trim() === '') {
                 if (!allowReset) return;
-                saveRideNames(activityId, { ...current, placeCount: null });
-                state.limitError = '';
+                saveRideOverride(activityId, { ...current, placeCount: null });
+                state.countError = '';
                 refreshActivityName();
                 render(inputId);
                 return;
             }
-            const value = Number(input.value);
+            const value = Number(rawValue);
             if (!Number.isInteger(value) || value < minimum) {
                 if (reportInvalid) {
-                    state.limitError = minimum > minimumNamePlaces()
+                    state.countError = minimum > minimumNamePlaces()
                         ? `This name has ${minimum} protected places. Enter ${minimum} or more.`
                         : `Enter a whole number of ${minimum} or more.`;
                     render(inputId);
                 }
                 return;
             }
-            saveRideNames(activityId, { ...current, placeCount: value });
-            state.limitError = '';
+            saveRideOverride(activityId, { ...current, placeCount: value });
+            state.countError = '';
             refreshActivityName();
-            render(inputId);
+            updateChips();
         };
-        // Native number-input arrows dispatch `input` while the value changes;
-        // `change` may wait for a commit or blur depending on the browser.
-        input.addEventListener('input', () => applyValue({
-            allowReset: false,
-            reportInvalid: false,
-        }));
-        input.addEventListener('change', () => applyValue({
-            allowReset: true,
-            reportInvalid: true,
-        }));
+        slider.addEventListener('input', () => {
+            syncSliderProgress();
+            input.value = slider.value;
+            applyValue(slider.value, {
+                allowReset: false,
+                reportInvalid: false,
+            });
+        });
+        input.addEventListener('input', () => {
+            const value = Number(input.value);
+            if (Number.isInteger(value) && value >= minimum) {
+                slider.value = String(Math.min(sliderMaximum, value));
+                syncSliderProgress();
+            }
+            applyValue(input.value, {
+                allowReset: false,
+                reportInvalid: false,
+            });
+        });
+        input.addEventListener('change', () => {
+            applyValue(input.value, {
+                allowReset: true,
+                reportInvalid: true,
+            });
+            if (!state.countError && input.value.trim() !== '') render(inputId);
+        });
 
-        section.append(copy, input);
+        controls.append(sliderLabel, slider, inputLabel, input);
+        section.append(controls);
+        if (state.countError) {
+            const note = createPanelNote(state.countError);
+            note.className = 'activity-renamer-note activity-renamer-status--error';
+            note.id = noteId;
+            section.append(note);
+        }
         panel.append(section);
     }
 
     function createNameChip(name, view, state, render) {
         const chip = createElement('div', 'activity-renamer-chip');
         const landmark = view.byName.get(name);
-        // A saved place can reach the name through a full-track visit that no
+        // A Favorite can reach the name through a full-track visit that no
         // passage covers, so the chip falls back to matching it by name.
-        const savedPlace = landmark?.match?.savedPlace
-            || view.savedPlaces.find(saved => saved.name === name)
+        const favorite = landmark?.match?.favorite
+            || view.favorites.find(item => item.name === name)
             || null;
 
         const renameButton = createElement('button', 'activity-renamer-chip-name', {
             type: 'button',
             textContent: name,
-            title: savedPlace || landmark
+            title: favorite || landmark
                 ? `Rename ${name} wherever a route comes near it`
                 : `${name} has no place to rename`,
         });
-        renameButton.disabled = !savedPlace && !landmark;
+        renameButton.disabled = !favorite && !landmark;
         renameButton.addEventListener('click', () => openPlaceEditor(state, render, {
-            existing: savedPlace,
+            existing: favorite,
             passage: landmark?.passage || null,
             anchor: NAME_ANCHOR,
         }));
@@ -2733,28 +2852,29 @@
     // Settlements the route came near but the name does not mention: those the
     // automatic selection had no slot for, those taken out by hand, and those
     // the block list silences everywhere.
-    function appendAlsoPassed(panel, state, render) {
+    function appendAlsoPassed(panel, state, render, tablist) {
         const view = state.view;
-        if (!view) return;
-
-        const inName = new Set(view.names);
-        const dropped = nameKeys(loadRideNames().dropped);
+        const inName = new Set(view?.names || []);
+        const dropped = nameKeys(loadRideOverride().dropped);
         const blocked = nameKeys(loadBlockedNames());
-        appendListSection(
-            panel,
-            'Also passed',
-            view.landmarks.filter(landmark =>
-                landmark.passage.featureKind !== 'road'
-                && landmark.name
-                && !inName.has(landmark.name)),
-            {
-                empty: 'Every settlement of this route is in the name.',
+        const places = (view?.landmarks || []).filter(landmark =>
+            landmark.passage.featureKind !== 'road'
+            && landmark.name
+            && !inName.has(landmark.name));
+        appendCollectionTab(panel, state, render, tablist, {
+            id: 'places',
+            label: 'Other places',
+            icon: 'places',
+            appendContents: container => appendListContents(container, places, {
+                empty: view
+                    ? 'Every settlement of this route is in the name.'
+                    : 'Build the name to load nearby places.',
                 row: landmark => {
-                    appendLandmarkRow(panel, landmark, { dropped, blocked }, state, render);
-                    appendEditorAt(panel, state, render, landmark.passage);
+                    appendLandmarkRow(container, landmark, { dropped, blocked }, state, render);
+                    appendEditorAt(container, state, render, landmark.passage);
                 },
-            },
-        );
+            }),
+        });
     }
 
     function uniqueLandmarksByName(landmarks) {
@@ -2767,67 +2887,60 @@
         return Array.from(byName.values());
     }
 
-    function appendRoads(panel, state, render) {
+    function appendRoads(panel, state, render, tablist) {
         const view = state.view;
-        if (!view) return;
-
-        const inName = new Set(view.names);
-        const roads = uniqueLandmarksByName(view.landmarks.filter(landmark =>
+        const inName = new Set(view?.names || []);
+        const roads = uniqueLandmarksByName((view?.landmarks || []).filter(landmark =>
             landmark.passage.featureKind === 'road' && !inName.has(landmark.name)));
-        const toggle = createPanelButton(`Roads (${roads.length})`);
-        toggle.id = 'activity-renamer-roads-toggle';
-        toggle.className = 'activity-renamer-section-toggle';
-        toggle.setAttribute('aria-expanded', String(state.roadsOpen));
-        toggle.setAttribute('aria-controls', 'activity-renamer-roads');
-        toggle.addEventListener('click', () => {
-            state.roadsOpen = !state.roadsOpen;
-            render();
+        appendCollectionTab(panel, state, render, tablist, {
+            id: 'roads',
+            label: 'Other roads',
+            icon: 'roads',
+            appendContents: container => {
+                if (roads.length === 0) {
+                    container.append(createPanelNote(view
+                        ? 'No other named roads were passed.'
+                        : 'Build the name to load nearby roads.'));
+                    return;
+                }
+                const dropped = nameKeys(loadRideOverride().dropped);
+                const blocked = nameKeys(loadBlockedNames());
+                for (const road of roads) {
+                    appendLandmarkRow(container, road, { dropped, blocked }, state, render);
+                    appendEditorAt(container, state, render, road.passage);
+                }
+            },
         });
-        panel.append(toggle);
-        if (!state.roadsOpen) return;
-
-        const container = createElement('div', '', { id: 'activity-renamer-roads' });
-        if (roads.length === 0) {
-            container.append(createPanelNote('No other named roads were passed.'));
-        } else {
-            const dropped = nameKeys(loadRideNames().dropped);
-            const blocked = nameKeys(loadBlockedNames());
-            for (const road of roads) {
-                appendLandmarkRow(container, road, { dropped, blocked }, state, render);
-                appendEditorAt(container, state, render, road.passage);
-            }
-        }
-        panel.append(container);
     }
 
     function appendLandmarkRow(panel, landmark, keys, state, render) {
         const { passage, match, name } = landmark;
 
-        const addButton = createPanelButton('+', true);
-        addButton.title = `Put ${name} into this ride’s name`;
-        addButton.setAttribute('aria-label', addButton.title);
+        const addButton = createIconPanelButton(
+            'add',
+            `Add ${name} to this activity name`,
+            true,
+        );
         addButton.addEventListener('click', () => runPanelAction(() => {
             keepInThisName(name);
             render();
         }));
 
-        const renameButton = createPanelButton('★');
-        renameButton.title = match
-            ? `Edit the saved name ${match.savedPlace.name}`
+        const favoriteLabel = match
+            ? `Edit Favorite ${match.favorite.name}`
             : `Save a preferred name for ${name}`;
-        renameButton.setAttribute('aria-label', renameButton.title);
+        const renameButton = createIconPanelButton('favorites', favoriteLabel);
         renameButton.addEventListener('click', () => openPlaceEditor(state, render, {
-            existing: match?.savedPlace || null,
+            existing: match?.favorite || null,
             passage,
             anchor: passage,
         }));
 
         const isBlocked = hasNameKey(name, keys.blocked);
-        const blockButton = createPanelButton('⛔');
-        blockButton.title = isBlocked
+        const blockLabel = isBlocked
             ? `Allow ${name} in generated names again`
-            : `Leave ${name} out of every name, on every ride`;
-        blockButton.setAttribute('aria-label', blockButton.title);
+            : `Exclude ${name} from every activity name`;
+        const blockButton = createIconPanelButton('excluded', blockLabel);
         blockButton.setAttribute('aria-pressed', String(isBlocked));
         blockButton.addEventListener('click', () => runPanelAction(() => {
             toggleBlockedName(name);
@@ -2837,44 +2950,47 @@
         // Why it is not in the name comes first; a place that simply lost the
         // slot says nothing and goes straight to where it was passed.
         const reason = hasNameKey(name, keys.dropped) ? 'Removed from this ride'
-            : isBlocked ? 'Never in a name'
+            : isBlocked ? 'Excluded'
                 : null;
-        const details = [reason, rangeLabel(passage), passage.address]
+        const sourceDetails = name === passage.baseName
+            ? passage.featureKind === 'road' ? passage.roadType : passage.placeType
+            : passage.address;
+        const details = [reason, rangeLabel(passage), sourceDetails]
             .filter(Boolean)
             .join(' · ');
         appendPanelRow(panel, name, details, [addButton, renameButton, blockButton]);
     }
 
-    // A favorite replaces the OSM name on every ride that comes near it.
+    // A Favorite replaces the OSM name on every ride that comes near it.
     function appendFavoriteContents(panel, state, render) {
-        appendListContents(panel, loadSavedPlaces(), {
+        appendListContents(panel, loadFavorites(), {
             empty: 'No favorites yet. Rename a place above, or add one by address.',
-            row: savedPlace => {
+            row: favorite => {
                 const editButton = createPanelButton('Edit');
                 editButton.addEventListener('click', () =>
-                    openPlaceEditor(state, render, { existing: savedPlace, anchor: savedPlace }));
+                    openPlaceEditor(state, render, { existing: favorite, anchor: favorite }));
 
-                const confirming = state.confirmingDeleteId === savedPlace.id;
+                const confirming = state.confirmingDeleteId === favorite.id;
                 const deleteButton = createPanelButton(confirming ? 'Confirm delete' : 'Delete');
                 deleteButton.addEventListener('click', () => runPanelAction(() => {
                     if (!confirming) {
-                        state.confirmingDeleteId = savedPlace.id;
+                        state.confirmingDeleteId = favorite.id;
                         render();
                         return;
                     }
-                    removeSavedPlace(savedPlace.id);
+                    removeFavorite(favorite.id);
                     state.confirmingDeleteId = null;
                     render();
                 }));
 
-                const coordinates = `${savedPlace.lat.toFixed(5)}, ${savedPlace.lon.toFixed(5)}`;
+                const coordinates = `${favorite.lat.toFixed(5)}, ${favorite.lon.toFixed(5)}`;
                 appendPanelRow(
                     panel,
-                    `★ ${savedPlace.name}`,
-                    `${savedPlace.address || coordinates} · ${savedPlace.radiusM} m`,
+                    favorite.name,
+                    `${favorite.address || coordinates} · ${favorite.radiusM} m`,
                     [editButton, deleteButton],
                 );
-                appendEditorAt(panel, state, render, savedPlace);
+                appendEditorAt(panel, state, render, favorite);
             },
         });
         appendAddressSearch(panel, state, render);
@@ -2882,14 +2998,14 @@
 
     function appendBlockedNameContents(panel, state, render) {
         appendListContents(panel, loadBlockedNames(), {
-            empty: 'Nothing is blocked. “Never” on a landmark silences a name for good.',
+            empty: 'Nothing is excluded. Use the exclude action on a place to hide it from every name.',
             row: name => {
                 const removeButton = createPanelButton('Unblock');
                 removeButton.addEventListener('click', () => runPanelAction(() => {
                     toggleBlockedName(name);
                     render();
                 }));
-                appendPanelRow(panel, `⛔ ${name}`, 'Left out of every name', [removeButton]);
+                appendPanelRow(panel, name, 'Left out of every name', [removeButton]);
             },
         });
     }
@@ -2907,8 +3023,10 @@
             return;
         }
 
+        currentNamePanelState().open = true;
         button.disabled = true;
         nameBuildBusy = true;
+        updatePanelToggleButton();
         renderNamePanel();
         setButtonState(button, STRINGS.downloading, 'loading');
 
@@ -2935,7 +3053,7 @@
 
             const activityName = buildActivityName(routeFeatures.passages, track);
             if (activityName.names.length === 0) {
-                throw new Error('The route has no named OSM place, road, or savedPlace radius.');
+                throw new Error('The route has no named OSM place, road, or Favorite.');
             }
             lastRouteAnalysis = { activityId, track, passages: activityName.passages };
 
@@ -2955,7 +3073,7 @@
             nameBuildBusy = false;
             button.disabled = false;
             setButtonState(button, STRINGS.idle);
-            updateEditNameButton();
+            updatePanelToggleButton();
             renderNamePanel();
         }
     }
@@ -2971,31 +3089,36 @@
 
         installStyles();
 
-        const button = createElement('button', 'activity-renamer-button', {
-            id: BUTTON_ID,
-            type: 'button',
-            title: 'Generate name from GPS track',
-        });
+        const button = createElement(
+            'button',
+            'activity-renamer-control activity-renamer-button activity-renamer-primary-button',
+            {
+                id: BUTTON_ID,
+                type: 'button',
+                title: 'Generate name from GPS track',
+            },
+        );
         setButtonState(button, STRINGS.idle);
         button.addEventListener('click', event => {
             event.preventDefault();
             void generateAndFillName(button);
         });
 
-        const editNameButton = createElement(
+        const panelToggleButton = createElement(
             'button',
-            'activity-renamer-button activity-renamer-button--secondary activity-renamer-button--toggle',
-            { id: EDIT_NAME_BUTTON_ID, type: 'button' },
+            'activity-renamer-control activity-renamer-button activity-renamer-neutral-button activity-renamer-button--toggle',
+            { id: PANEL_TOGGLE_BUTTON_ID, type: 'button' },
         );
-        editNameButton.addEventListener('click', event => {
+        panelToggleButton.append(createStravaChevron());
+        panelToggleButton.addEventListener('click', event => {
             event.preventDefault();
             toggleNamePanel();
         });
 
         const wrapper = createElement('div', 'activity-renamer-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-        wrapper.append(titleLabel, button, editNameButton);
-        updateEditNameButton();
+        wrapper.append(titleLabel, button, panelToggleButton);
+        updatePanelToggleButton();
         if (namePanelState?.open) renderNamePanel();
         log('Button injected');
         return true;

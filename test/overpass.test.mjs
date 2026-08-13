@@ -10,7 +10,7 @@ import {
     toGpx,
 } from './support/harness.mjs';
 
-const RIDE_KEY = 'activity_renamer_ride_names_v1';
+const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
 test('reuses the cached landmarks on the second run', async () => {
     const { fixture, renamer } = loadScenario('loop-with-revisit');
 
@@ -50,7 +50,7 @@ test('discards a cache written under different naming settings', async () => {
 test('reuses the feature cache after the ride place-count override changes', async () => {
     const first = loadScenario('dense-settlements', {
         userscriptStorage: {
-            [RIDE_KEY]: JSON.stringify([{
+            [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532', kept: [], dropped: [], placeCount: 3,
             }]),
         },
@@ -62,7 +62,7 @@ test('reuses the feature cache after the ride place-count override changes', asy
     const second = loadScenario('dense-settlements', {
         storage: { [cacheKey]: cached },
         userscriptStorage: {
-            [RIDE_KEY]: JSON.stringify([{
+            [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532', kept: [], dropped: [], placeCount: 12,
             }]),
         },
@@ -74,7 +74,7 @@ test('reuses the feature cache after the ride place-count override changes', asy
         'the override can use more landmarks than the automatic calculation',
     );
     assert.equal(second.renamer.overpassRequestCount(), 0,
-        'the local name limit does not invalidate cached OSM passages');
+        'the activity place-count override does not invalidate cached OSM passages');
 });
 
 test('falls over to another Overpass mirror when one is busy', async () => {

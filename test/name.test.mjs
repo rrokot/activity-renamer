@@ -103,7 +103,7 @@ test('stays fast when Overpass returns hundreds of roads', async () => {
     assert.ok(elapsedMs < 5000, `naming took ${elapsedMs.toFixed(0)} ms`);
 });
 
-test('a saved place renames the settlement it covers', async () => {
+test('a Favorite renames the settlement it covers', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         userscriptStorage: {
             activity_renamer_saved_places_v1: JSON.stringify([{
@@ -122,7 +122,7 @@ test('a saved place renames the settlement it covers', async () => {
     assert.equal(name, 'Cottbus - Sielow - Guhrow - Gurkenpause - Dissen - Sielow - Cottbus');
 });
 
-test('a saved place away from any settlement joins the narrative', async () => {
+test('a Favorite away from any settlement joins the narrative', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         userscriptStorage: {
             activity_renamer_saved_places_v1: JSON.stringify([{

@@ -27,13 +27,14 @@ Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
 
 1. Open a Strava activity's edit page.
 2. Click **Build Name**.
-3. Optionally edit the result with **✎ Edit Name**.
+3. Optionally open the arrow beside the controls to edit the result inline.
 4. Save the activity.
 
-## Edit Name
+## Inline editor
 
 - Add, rename or remove places for the current activity.
-- Set the maximum number of places in generated names (2 or more).
-- Browse named roads in a separate collapsible list.
+- Adjust the 2–10 place slider above the name chips, or enter a larger number
+  in the linked field; it starts at the calculated value for this activity.
+- Browse unused route places and named roads in separate tabs.
 - Save preferred place names for future activities in **Favorites**.
-- Manage unwanted names separately in **Never in a name**.
+- Manage unwanted names separately in **Excluded**.

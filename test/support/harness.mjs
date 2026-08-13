@@ -147,9 +147,9 @@ export function loadRenamer(options = {}) {
         storage = {},
     } = options;
 
-    // Modal prompts block the page and cannot show what is being edited; the
-    // inline panel does all of that in context, so reaching for one is a bug.
-    const refuseModal = name => () => {
+    // Blocking browser prompts cannot show the surrounding editor context, so
+    // every edit stays in the inline panel.
+    const refuseBlockingPrompt = name => () => {
         throw new Error(`window.${name} must not be used`);
     };
 
@@ -256,8 +256,8 @@ export function loadRenamer(options = {}) {
         alert: message => alerts.push(String(message)),
         window: {
             location: { pathname: `/activities/${activityId}/edit`, href: '' },
-            prompt: refuseModal('prompt'),
-            confirm: refuseModal('confirm'),
+            prompt: refuseBlockingPrompt('prompt'),
+            confirm: refuseBlockingPrompt('confirm'),
         },
     };
     sandbox.window.alert = sandbox.alert;
@@ -301,8 +301,8 @@ export function loadRenamer(options = {}) {
         get button() {
             return byId('activity-renamer-rename-btn');
         },
-        get editNameButton() {
-            return byId('activity-renamer-edit-name-btn');
+        get panelToggleButton() {
+            return byId('activity-renamer-panel-toggle');
         },
         get panel() {
             return byId('activity-renamer-name-panel');
@@ -331,8 +331,8 @@ export function loadScenario(fixtureName, overrides = {}) {
             activityId: fixture.activityId,
             gpx: toGpx(fixture.points),
             overpassResponses: [jsonResponse({ elements: overpassElements(fixture) })],
-            userscriptStorage: fixture.savedPlaces
-                ? { activity_renamer_saved_places_v1: JSON.stringify(fixture.savedPlaces) }
+            userscriptStorage: fixture.favorites
+                ? { activity_renamer_saved_places_v1: JSON.stringify(fixture.favorites) }
                 : {},
             ...overrides,
         }),

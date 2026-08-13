@@ -9,7 +9,7 @@ installation, usage and user-visible behaviour.
   source file.
 - `package.json` contains the matching package version and the test command.
 - `test/*.test.mjs` contains behavioural tests.
-- `test/support/` contains the DOM, dialog and userscript harness.
+- `test/support/` contains the DOM, panel and userscript harness.
 - `test/fixtures/` contains readable route scenarios.
 
 The production script intentionally has no runtime dependencies or build step.
@@ -64,8 +64,8 @@ Test responsibilities:
 | File | Responsibility |
 |---|---|
 | `name.test.mjs` | Narrative order, revisits, roads, endpoints, slots and title length |
-| `ride-edits.test.mjs` | Per-activity additions/removals, blocking and change count |
-| `dialog.test.mjs` | Sections, disclosure, name limits, dialog semantics, focus, validation and address search |
+| `ride-edits.test.mjs` | Per-activity additions/removals, blocking and overrides |
+| `panel.test.mjs` | Sections, tabs, place counts, panel semantics, focus, validation and address search |
 | `storage.test.mjs` | Tampermonkey storage |
 | `overpass.test.mjs` | Mirrors, retry policy, transport and feature cache |
 | `page.test.mjs` | Injection, observers, stylesheet and activities without GPS |
