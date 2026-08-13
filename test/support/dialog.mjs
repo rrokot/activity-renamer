@@ -1,28 +1,27 @@
-// Helpers for driving the name dialog. Every action re-renders the panel,
-// so element references must be looked up again after each click — exactly the
-// way a user reads the dialog again after it changes.
+// Helpers for driving the inline name panel. Every action re-renders it, so
+// element references must be looked up again after each click.
 
-export function openDialog(renamer) {
+export function openPanel(renamer) {
     renamer.editNameButton.click();
-    return renamer.dialog;
+    return renamer.panel;
 }
 
-export function dialogButtons(renamer) {
-    return renamer.dialog.querySelectorAll('button');
+export function panelButtons(renamer) {
+    return renamer.panel.querySelectorAll('button');
 }
 
-export function dialogButton(renamer, text) {
-    const button = dialogButtons(renamer).find(candidate => candidate.textContent === text);
+export function panelButton(renamer, text) {
+    const button = panelButtons(renamer).find(candidate => candidate.textContent === text);
     if (!button) {
-        throw new Error(`No "${text}" button in the dialog. Present: ${
-            dialogButtons(renamer).map(candidate => candidate.textContent).join(', ')}`);
+        throw new Error(`No "${text}" button in the panel. Present: ${
+            panelButtons(renamer).map(candidate => candidate.textContent).join(', ')}`);
     }
     return button;
 }
 
-export function dialogField(renamer, id) {
-    const field = renamer.dialog.querySelector(`#${id}`);
-    if (!field) throw new Error(`No #${id} in the dialog`);
+export function panelField(renamer, id) {
+    const field = renamer.panel.querySelector(`#${id}`);
+    if (!field) throw new Error(`No #${id} in the panel`);
     return field;
 }
 
@@ -33,11 +32,13 @@ export function typeInto(field, value) {
     return field;
 }
 
-export function submitForm(field) {
-    field.parentNode.dispatchEvent({ type: 'submit' });
+export function activateGroup(field) {
+    const button = field.parentNode.querySelector('button');
+    if (!button) throw new Error('No action button beside the field');
+    button.click();
 }
 
-export function dialogText(renamer) {
+export function panelText(renamer) {
     const parts = [];
     const visit = element => {
         for (const child of element.children) {
@@ -49,24 +50,24 @@ export function dialogText(renamer) {
             visit(child);
         }
     };
-    visit(renamer.dialog);
+    visit(renamer.panel);
     return parts.join(' | ');
 }
 
-// The section headings, top to bottom — the order the dialog reads in.
+// The section headings, top to bottom — the order the panel reads in.
 export function sectionTitles(renamer) {
-    return renamer.dialog.querySelectorAll('h4').map(title => title.textContent);
+    return renamer.panel.querySelectorAll('h4').map(title => title.textContent);
 }
 
 // The name is edited as chips: the label renames the place, the ✕ takes it out.
 export function chipNames(renamer) {
-    return renamer.dialog.querySelectorAll('button')
+    return renamer.panel.querySelectorAll('button')
         .filter(button => button.className === 'activity-renamer-chip-name')
         .map(button => button.textContent);
 }
 
 export function nameChip(renamer, name) {
-    const rename = renamer.dialog.querySelectorAll('button')
+    const rename = renamer.panel.querySelectorAll('button')
         .find(button => button.className === 'activity-renamer-chip-name'
             && button.textContent === name);
     if (!rename) {
@@ -77,7 +78,7 @@ export function nameChip(renamer, name) {
 
 // A button in the "Also passed" row of a given place.
 export function passedRowButton(renamer, label, place) {
-    const button = renamer.dialog.querySelectorAll('button')
+    const button = renamer.panel.querySelectorAll('button')
         .filter(candidate => candidate.textContent === label)
         .find(candidate => candidate.title.includes(place));
     if (!button) throw new Error(`No "${label}" button for ${place}`);

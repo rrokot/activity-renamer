@@ -10,7 +10,7 @@ import {
     toGpx,
 } from './support/harness.mjs';
 
-const MAX_NAME_PLACES_KEY = 'activity_renamer_max_name_places_v1';
+const RIDE_KEY = 'activity_renamer_ride_names_v1';
 test('reuses the cached landmarks on the second run', async () => {
     const { fixture, renamer } = loadScenario('loop-with-revisit');
 
@@ -47,9 +47,13 @@ test('discards a cache written under different naming settings', async () => {
     assert.equal(renamer.overpassRequestCount(), 1, 'a stale signature forces a refetch');
 });
 
-test('reuses the feature cache after the maximum name places setting changes', async () => {
+test('reuses the feature cache after the ride place-count override changes', async () => {
     const first = loadScenario('dense-settlements', {
-        userscriptStorage: { [MAX_NAME_PLACES_KEY]: JSON.stringify(3) },
+        userscriptStorage: {
+            [RIDE_KEY]: JSON.stringify([{
+                activityId: '19000955532', kept: [], dropped: [], placeCount: 3,
+            }]),
+        },
     });
     await first.renamer.generate();
 
@@ -57,10 +61,18 @@ test('reuses the feature cache after the maximum name places setting changes', a
     const cached = first.renamer.localStorage.getItem(cacheKey);
     const second = loadScenario('dense-settlements', {
         storage: { [cacheKey]: cached },
-        userscriptStorage: { [MAX_NAME_PLACES_KEY]: JSON.stringify(12) },
+        userscriptStorage: {
+            [RIDE_KEY]: JSON.stringify([{
+                activityId: '19000955532', kept: [], dropped: [], placeCount: 12,
+            }]),
+        },
     });
 
-    assert.equal(await second.renamer.generate(), second.fixture.expected);
+    const expandedName = await second.renamer.generate();
+    assert.ok(
+        expandedName.split(' - ').length > second.fixture.expected.split(' - ').length,
+        'the override can use more landmarks than the automatic calculation',
+    );
     assert.equal(second.renamer.overpassRequestCount(), 0,
         'the local name limit does not invalidate cached OSM passages');
 });

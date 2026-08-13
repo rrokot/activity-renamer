@@ -6,7 +6,7 @@ import {
 } from './support/harness.mjs';
 
 const SAVED_PLACES_KEY = 'activity_renamer_saved_places_v1';
-const MAX_NAME_PLACES_KEY = 'activity_renamer_max_name_places_v1';
+const RIDE_KEY = 'activity_renamer_ride_names_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -27,9 +27,16 @@ test('reads saved places from the userscript manager storage', async () => {
     assert.match(name, /Gurkenpause/);
 });
 
-test('reads the maximum name places from userscript manager storage', async () => {
+test('reads the place-count override for this activity from userscript storage', async () => {
     const { renamer } = loadScenario('dense-settlements', {
-        userscriptStorage: { [MAX_NAME_PLACES_KEY]: JSON.stringify(2) },
+        userscriptStorage: {
+            [RIDE_KEY]: JSON.stringify([{
+                activityId: '19000955532',
+                kept: [],
+                dropped: [],
+                placeCount: 2,
+            }]),
+        },
     });
 
     const name = await renamer.generate();

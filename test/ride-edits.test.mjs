@@ -3,9 +3,10 @@ import test from 'node:test';
 
 import {
     chipNames,
-    dialogButton,
     nameChip,
-    openDialog,
+    openPanel,
+    panelButton,
+    panelField,
     passedRowButton,
 } from './support/dialog.mjs';
 import { loadFixture, loadScenario } from './support/harness.mjs';
@@ -50,14 +51,14 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
     const { renamer } = loadScenario('loop-with-revisit');
 
     assert.equal(await renamer.generate(), fixture.expected);
-    openDialog(renamer);
+    openPanel(renamer);
     nameChip(renamer, 'Guhrow').drop.click();
 
     assert.equal(renamer.name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
     assert.ok(!chipNames(renamer).includes('Guhrow'), 'the chip is gone from the name');
     assert.deepEqual(
         JSON.parse(renamer.userscriptStore.get(RIDE_KEY)),
-        [{ activityId: fixture.activityId, kept: [], dropped: ['Guhrow'] }],
+        [{ activityId: fixture.activityId, kept: [], dropped: ['Guhrow'], placeCount: 6 }],
         'the removal belongs to this ride alone',
     );
 
@@ -66,11 +67,31 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)), ['Guhrow']);
     assert.equal(renamer.name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
 
-    dialogButton(renamer, 'Never in a name (1)').click();
-    dialogButton(renamer, 'Unblock').click();
+    panelButton(renamer, 'Never in a name (1)').click();
+    panelButton(renamer, 'Unblock').click();
     passedRowButton(renamer, '+', 'Guhrow').click();
 
     assert.equal(renamer.name, fixture.expected);
+});
+
+test('dropping an automatic place removes its slot instead of choosing a replacement', async () => {
+    const { fixture, renamer } = loadScenario('dense-settlements');
+    await renamer.generate();
+    openPanel(renamer);
+    const before = renamer.name.split(' - ');
+
+    nameChip(renamer, 'Schmogrow').drop.click();
+
+    const after = renamer.name.split(' - ');
+    assert.equal(after.length, before.length - 1);
+    assert.doesNotMatch(renamer.name, /Schmogrow/);
+    assert.equal(panelField(renamer, 'activity-renamer-name-place-count').value, '6');
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(RIDE_KEY)), [{
+        activityId: fixture.activityId,
+        kept: [],
+        dropped: ['Schmogrow'],
+        placeCount: 6,
+    }]);
 });
 
 // Werben loses the automatic selection to places that spread wider over the
@@ -82,7 +103,7 @@ test('an added place survives the slots running out', async () => {
     assert.equal(await renamer.generate(), fixture.expected);
     assert.doesNotMatch(renamer.name, /Werben/);
 
-    openDialog(renamer);
+    openPanel(renamer);
     passedRowButton(renamer, '+', 'Werben').click();
 
     assert.match(renamer.name, /Werben/);
@@ -99,23 +120,24 @@ test('an added place survives the slots running out', async () => {
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(RIDE_KEY)), []);
 });
 
-// The button that opens the dialog belongs to the ride it opens, so it counts
+// The button that opens the panel belongs to the ride it opens, so it counts
 // what this rider changed here — not how many places are saved for every ride.
 test('the button counts the changes this ride carries', async () => {
     const { renamer } = loadScenario('dense-settlements');
 
     await renamer.generate();
 
-    assert.equal(renamer.editNameButton.textContent, '✎ Edit Name');
+    assert.equal(renamer.editNameButton.textContent, '');
 
-    openDialog(renamer);
+    openPanel(renamer);
     passedRowButton(renamer, '+', 'Werben').click();
 
-    assert.equal(renamer.editNameButton.textContent, '✎ Edit Name (1)');
+    assert.equal(renamer.editNameButton.textContent, '1');
+    assert.equal(renamer.editNameButton.title, 'Hide Activity Renamer');
 
     nameChip(renamer, 'Werben').drop.click();
 
-    assert.equal(renamer.editNameButton.textContent, '✎ Edit Name');
+    assert.equal(renamer.editNameButton.textContent, '');
 });
 
 // The whole point of the per-ride lists: the same village stays automatic
@@ -140,7 +162,7 @@ test('adding a blocked place overrules the block for this ride only', async () =
     });
 
     await renamer.generate();
-    openDialog(renamer);
+    openPanel(renamer);
     passedRowButton(renamer, '+', 'Guhrow').click();
 
     assert.match(renamer.name, /Guhrow/);

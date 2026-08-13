@@ -148,7 +148,7 @@ export function loadRenamer(options = {}) {
     } = options;
 
     // Modal prompts block the page and cannot show what is being edited; the
-    // dialog does all of that inline now, so reaching for one is a bug.
+    // inline panel does all of that in context, so reaching for one is a bug.
     const refuseModal = name => () => {
         throw new Error(`window.${name} must not be used`);
     };
@@ -304,8 +304,8 @@ export function loadRenamer(options = {}) {
         get editNameButton() {
             return byId('activity-renamer-edit-name-btn');
         },
-        get dialog() {
-            return byId('activity-renamer-name-dialog');
+        get panel() {
+            return byId('activity-renamer-name-panel');
         },
         get name() {
             return input.value;

@@ -50,6 +50,12 @@ export class FakeElement {
         this.attributes.set('name', String(value));
     }
 
+    get nextSibling() {
+        if (!this.parentNode) return null;
+        const index = this.parentNode.children.indexOf(this);
+        return index < 0 ? null : this.parentNode.children[index + 1] || null;
+    }
+
     setAttribute(name, value) {
         this.attributes.set(name, String(value));
     }
@@ -278,7 +284,12 @@ export function createEditPageDocument() {
     label.textContent = 'Title';
     const input = document.createElement('input');
     input.setAttribute('name', 'activity[name]');
-    form.append(label, input);
+    const descriptionLabel = document.createElement('label');
+    descriptionLabel.setAttribute('for', 'activity_description');
+    descriptionLabel.textContent = 'Description';
+    const description = document.createElement('textarea');
+    description.setAttribute('name', 'activity[description]');
+    form.append(label, input, descriptionLabel, description);
     document.body.append(form);
     return { document, form, label, input };
 }
