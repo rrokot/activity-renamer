@@ -10,14 +10,14 @@ import {
     openDialog,
     passedRowButton,
     typeInto,
-} from './dialog.mjs';
-import { loadFixture, loadScenario } from './harness.mjs';
+} from './support/dialog.mjs';
+import { loadFixture, loadScenario } from './support/harness.mjs';
 
 const BLOCKED_KEY = 'strava_route_blocked_names_v1';
 const RIDE_KEY = 'strava_route_ride_names_v1';
 
 test('leaves a blocked place out of the name', async () => {
-    const { renamer } = loadScenario('lusatia-loop', {
+    const { renamer } = loadScenario('loop-with-revisit', {
         storage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
 
@@ -28,7 +28,7 @@ test('leaves a blocked place out of the name', async () => {
 });
 
 test('blocks by name regardless of spelling case', async () => {
-    const { renamer } = loadScenario('lusatia-loop', {
+    const { renamer } = loadScenario('loop-with-revisit', {
         storage: { [BLOCKED_KEY]: JSON.stringify(['  gUHROW  ']) },
     });
 
@@ -36,7 +36,7 @@ test('blocks by name regardless of spelling case', async () => {
 });
 
 test('a blocked start reads as the next real place', async () => {
-    const { renamer } = loadScenario('lusatia-loop', {
+    const { renamer } = loadScenario('loop-with-revisit', {
         storage: { [BLOCKED_KEY]: JSON.stringify(['Cottbus']) },
     });
 
@@ -49,8 +49,8 @@ test('a blocked start reads as the next real place', async () => {
 // Never naming a ride after a place is the escalation of taking it out of this
 // one: the ✕ drops it, and the row it lands in offers to silence it for good.
 test('dropping a name then blocking it keeps the title rewritten', async () => {
-    const fixture = loadFixture('lusatia-loop');
-    const { renamer } = loadScenario('lusatia-loop', { userscriptManager: true });
+    const fixture = loadFixture('loop-with-revisit');
+    const { renamer } = loadScenario('loop-with-revisit', { userscriptManager: true });
 
     assert.equal(await renamer.generate(), fixture.expected);
     openDialog(renamer);
@@ -79,8 +79,8 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
 // Werben loses the automatic selection to places that spread wider over the
 // map; adding it by hand is the way to overrule that for this ride.
 test('an added place survives the slots running out', async () => {
-    const fixture = loadFixture('spreewald-dense');
-    const { renamer } = loadScenario('spreewald-dense', { userscriptManager: true });
+    const fixture = loadFixture('dense-settlements');
+    const { renamer } = loadScenario('dense-settlements', { userscriptManager: true });
 
     assert.equal(await renamer.generate(), fixture.expected);
     assert.doesNotMatch(renamer.name, /Werben/);
@@ -106,7 +106,7 @@ test('an added place survives the slots running out', async () => {
 // The button that opens the dialog belongs to the ride it opens, so it counts
 // what this rider changed here — not how many places are saved for every ride.
 test('the button counts the changes this ride carries', async () => {
-    const { renamer } = loadScenario('spreewald-dense', { userscriptManager: true });
+    const { renamer } = loadScenario('dense-settlements', { userscriptManager: true });
 
     await renamer.generate();
 
@@ -125,8 +125,8 @@ test('the button counts the changes this ride carries', async () => {
 // The whole point of the per-ride lists: the same village stays automatic
 // everywhere else.
 test('a name added to one ride reaches no other activity', async () => {
-    const fixture = loadFixture('spreewald-dense');
-    const { renamer } = loadScenario('spreewald-dense', {
+    const fixture = loadFixture('dense-settlements');
+    const { renamer } = loadScenario('dense-settlements', {
         storage: {
             [RIDE_KEY]: JSON.stringify([
                 { activityId: '19000955531', kept: ['Werben'], dropped: [] },
@@ -139,7 +139,7 @@ test('a name added to one ride reaches no other activity', async () => {
 });
 
 test('adding a blocked place overrules the block for this ride only', async () => {
-    const { renamer } = loadScenario('lusatia-loop', {
+    const { renamer } = loadScenario('loop-with-revisit', {
         userscriptManager: true,
         userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
@@ -157,7 +157,7 @@ test('adding a blocked place overrules the block for this ride only', async () =
 });
 
 test('carries blocked names through a backup', () => {
-    const { renamer } = loadScenario('lusatia-loop', {
+    const { renamer } = loadScenario('loop-with-revisit', {
         userscriptManager: true,
         userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
     });
@@ -168,7 +168,7 @@ test('carries blocked names through a backup', () => {
     assert.deepEqual(backup.blockedNames, ['Guhrow']);
 
     typeInto(dialogField(renamer, 'strava-route-backup-input'),
-        JSON.stringify({ favorites: [], blockedNames: ['Werben', 'Werben', 'Dissen'] }));
+        JSON.stringify({ savedPlaces: [], blockedNames: ['Werben', 'Werben', 'Dissen'] }));
     dialogButton(renamer, 'Import').click();
     dialogButton(renamer, 'Replace everything').click();
 

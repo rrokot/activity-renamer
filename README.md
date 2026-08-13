@@ -1,4 +1,4 @@
-# Strava Activity Route Renamer
+# Strava Route Renamer
 
 A Tampermonkey userscript that names a Strava activity after the places the
 route actually passes, read like a travel narrative:
@@ -10,7 +10,7 @@ roads along the track, and fills in the title field on the activity edit page.
 
 ## Install
 
-Open `strava-rename.user.js` in Tampermonkey. The script asks for
+Open `strava-route-renamer.user.js` in Tampermonkey. The script asks for
 `GM_xmlhttpRequest` (so Strava's Content-Security-Policy cannot block Overpass
 or Nominatim) and `GM_getValue`/`GM_setValue` (so the saved places survive
 clearing the site data). Without those grants it falls back to `fetch` and
@@ -79,17 +79,29 @@ Every edit rewrites the title immediately.
 
     npm test
 
-No dependencies, no network: `test/harness.mjs` evaluates the userscript in a
-`node:vm` sandbox with a stubbed edit page (`test/dom.mjs`), stubbed storage and
-`GM_*` API, immediate timers and a scripted `fetch`. A test clicks the button
-and asserts the value that lands in the title field, so the assertions cover the
-same path the browser takes. `test/dialog.mjs` drives the dialog the way a user
-does — every action re-renders it, so elements are looked up again after each
-click.
+No dependencies, no network: `test/support/harness.mjs` evaluates the userscript
+in a `node:vm` sandbox with a stubbed edit page (`test/support/dom.mjs`), stubbed
+storage and `GM_*` API, immediate timers and a scripted `fetch`. A test clicks
+the button and asserts the value that lands in the title field, so the
+assertions cover the same path the browser takes. `test/support/dialog.mjs`
+drives the dialog the way a user does — every action re-renders it, so elements
+are looked up again after each click.
+
+Each file holds one subject, named after it:
+
+| file | pins |
+|---|---|
+| `name.test.mjs` | the narrative: revisits, road fallback, endpoints, slots, length |
+| `ride-edits.test.mjs` | adding and removing for one ride, the block list, the button's count |
+| `dialog.test.mjs` | sections, chips, the editor and its errors, address search, backup |
+| `storage.test.mjs` | userscript storage, the move out of `localStorage`, retired keys |
+| `overpass.test.mjs` | mirrors, retries, transport, the passage cache |
+| `page.test.mjs` | button injection, observers, stylesheet, an activity without GPS |
 
 ### Fixtures
 
-`test/fixtures/*.json` describe a scenario in readable form:
+`test/fixtures/*.json` describe a scenario in readable form, named after the
+behaviour it pins rather than the region it was traced from:
 
 ```json
 {
@@ -124,6 +136,6 @@ different corners than the full-resolution GPX the browser uses.
 index was measured against the previous full scan:
 
 ```sh
-git show HEAD:strava-rename.user.js > /tmp/old.js
+git show HEAD:strava-route-renamer.user.js > /tmp/old.js
 USERSCRIPT_PATH=/tmp/old.js node your-benchmark.mjs
 ```

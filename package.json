@@ -1,8 +1,8 @@
 {
-    "name": "strava-rename",
-    "version": "0.0.0",
+    "name": "strava-route-renamer",
+    "version": "6.0.0",
     "private": true,
-    "description": "Tests for the Strava Activity Route Renamer userscript",
+    "description": "Userscript that names a Strava activity after the places its route passed",
     "type": "module",
     "scripts": {
         "test": "node --test \"test/*.test.mjs\""

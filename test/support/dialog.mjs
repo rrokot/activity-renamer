@@ -1,4 +1,4 @@
-// Helpers for driving the favorites dialog. Every action re-renders the panel,
+// Helpers for driving the name dialog. Every action re-renders the panel,
 // so element references must be looked up again after each click — exactly the
 // way a user reads the dialog again after it changes.
 

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Strava Activity Route Renamer
-// @namespace    https://tampermonkey.net/
-// @version      5.0.0
+// @name         Strava Route Renamer
+// @namespace    https://github.com/rrokot/strava-route-renamer
+// @version      6.0.0
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -9,6 +9,7 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
 // @connect      overpass-api.de
 // @connect      overpass.kumi.systems
 // @connect      overpass.private.coffee
@@ -32,9 +33,9 @@
         minAutoPlaces: 3,
         maxAutoPlaces: 7,
         autoPlaceSpacingKm: 4,
-        favoriteRadiusM: 200,
-        favoriteRadiusMinM: 10,
-        favoriteRadiusMaxM: 5000,
+        savedPlaceRadiusM: 200,
+        savedPlaceRadiusMinM: 10,
+        savedPlaceRadiusMaxM: 5000,
         rideHistory: 50,
         maxPlaceNameLength: 80,
         maxNameLength: 200,
@@ -72,7 +73,7 @@
         routeFeatures: 'strava_route_features_v1_',
     };
     const STORAGE_KEY = {
-        favorites: 'strava_route_favorites_v1',
+        savedPlaces: 'strava_route_saved_places_v1',
         blockedNames: 'strava_route_blocked_names_v1',
         rideNames: 'strava_route_ride_names_v1',
     };
@@ -450,6 +451,31 @@
         if (localStorage.getItem(key) !== null) localStorage.removeItem(key);
     }
 
+    // Keys earlier versions wrote and this one no longer reads: the favorites
+    // that became saved places, and the two shapes the per-ride list went
+    // through. Renaming a key orphans what is under the old one, so the old one
+    // is cleared instead of left to sit in the profile for good.
+    const RETIRED_STORAGE_KEYS = [
+        'strava_route_favorites_v1',
+        'strava_route_pinned_names_v1',
+        'strava_route_kept_names_v1',
+    ];
+
+    function forgetRetiredSettings() {
+        const forgotten = [];
+        for (const key of RETIRED_STORAGE_KEYS) {
+            if (localStorage.getItem(key) !== null) {
+                localStorage.removeItem(key);
+                forgotten.push(key);
+            }
+            if (typeof GM_deleteValue === 'function' && GM_getValue(key, null) !== null) {
+                GM_deleteValue(key);
+                forgotten.push(key);
+            }
+        }
+        if (forgotten.length > 0) log(`Cleared retired settings: ${forgotten.join(', ')}`);
+    }
+
     // Anything saved by an older install is moved over once, so a browser
     // clean-up cannot take it away afterwards.
     function migrateSettingToUserscriptStorage(key) {
@@ -466,12 +492,12 @@
         return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
     }
 
-    // The single gate every favorite passes, whether it comes from the form, a
+    // The single gate every saved place passes, whether it comes from the form, a
     // pasted backup or an older version of the script.
     function isUsableRadius(radiusM) {
         return Number.isFinite(radiusM)
-            && radiusM >= CONFIG.favoriteRadiusMinM
-            && radiusM <= CONFIG.favoriteRadiusMaxM;
+            && radiusM >= CONFIG.savedPlaceRadiusMinM
+            && radiusM <= CONFIG.savedPlaceRadiusMaxM;
     }
 
     function isUsableCoordinate(lat, lon) {
@@ -483,7 +509,7 @@
         return Boolean(name) && name.length <= CONFIG.maxPlaceNameLength;
     }
 
-    function normalizeFavorite(value) {
+    function normalizeSavedPlace(value) {
         if (!value || typeof value !== 'object') return null;
         const name = collapseWhitespace(value.name);
         const lat = Number(value.lat);
@@ -504,20 +530,20 @@
         };
     }
 
-    function loadFavorites() {
-        const stored = readSetting(STORAGE_KEY.favorites);
+    function loadSavedPlaces() {
+        const stored = readSetting(STORAGE_KEY.savedPlaces);
         if (!Array.isArray(stored)) return [];
-        return stored.map(normalizeFavorite).filter(Boolean);
+        return stored.map(normalizeSavedPlace).filter(Boolean);
     }
 
-    function saveFavorites(favorites) {
-        const normalized = favorites.map(normalizeFavorite).filter(Boolean);
-        writeSetting(STORAGE_KEY.favorites, normalized);
+    function storeSavedPlaces(savedPlaces) {
+        const normalized = savedPlaces.map(normalizeSavedPlace).filter(Boolean);
+        writeSetting(STORAGE_KEY.savedPlaces, normalized);
         return normalized;
     }
 
-    function createFavoriteId() {
-        return `favorite_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    function createSavedPlaceId() {
+        return `place_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
     // Some places sit on the route but never belong in its name: the suburb the
@@ -564,7 +590,7 @@
 
     // Two answers belong to the ride in front of the user and to no other: a
     // place this name must contain, and a place this name is better off
-    // without. Saying either about every ride is what a favorite and the block
+    // without. Saying either about every ride is what a saved place and the block
     // list are for. The store keeps one entry per activity, and only for the
     // rides whose names were last adjusted by hand.
     const NO_RIDE_NAMES = { kept: [], dropped: [] };
@@ -641,7 +667,7 @@
 
     function namingPreferences() {
         return {
-            favorites: loadFavorites(),
+            savedPlaces: loadSavedPlaces(),
             blockedNames: loadBlockedNames(),
             ...loadRideNames(),
         };
@@ -1005,7 +1031,7 @@
 
     // Every continuous stretch of track points within a feature's radius is one
     // visit, anchored at the closest point. Settlements, named roads and
-    // favorites all become visits through this single path.
+    // saved places all become visits through this single path.
     function visitsFromDistances(track, distancesByIndex, description) {
         const visits = [];
         let visit = null;
@@ -1286,7 +1312,7 @@
     }
 
     // Nominatim address fields are used only to suggest a readable default
-    // when the user searches for a custom favorite. Route names come from OSM
+    // when the user searches for a place of their own. Route names come from OSM
     // place nodes, never from reverse geocoding.
     const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
@@ -1331,7 +1357,7 @@
             || addressPlaceName(address, PRIMARY_ADDRESS_FIELDS);
     }
 
-    function favoriteCandidateFromSearchResult(result) {
+    function candidateFromSearchResult(result) {
         const lat = Number(result?.lat);
         const lon = Number(result?.lon);
         const address = typeof result?.display_name === 'string' ? result.display_name.trim() : '';
@@ -1348,7 +1374,7 @@
         };
     }
 
-    async function searchFavoriteAddresses(query) {
+    async function searchAddresses(query) {
         const params = new URLSearchParams({
             q: query,
             format: 'jsonv2',
@@ -1362,18 +1388,18 @@
 
         const data = await response.json();
         if (!Array.isArray(data)) throw new Error('Address search returned an invalid response.');
-        return data.map(favoriteCandidateFromSearchResult).filter(Boolean);
+        return data.map(candidateFromSearchResult).filter(Boolean);
     }
 
-    function closestFavoriteForPassage(passage, track, favorites) {
+    function closestSavedPlaceForPassage(passage, track, savedPlaces) {
         let best = null;
-        for (const favorite of favorites) {
+        for (const savedPlace of savedPlaces) {
             let distanceM = Infinity;
             let closestIndex = passage.start;
             for (let index = passage.start; index <= passage.end; index++) {
                 const pointDistanceM = haversineKm(
-                    favorite.lat,
-                    favorite.lon,
+                    savedPlace.lat,
+                    savedPlace.lon,
                     track.latitudes[index],
                     track.longitudes[index],
                 ) * 1000;
@@ -1383,19 +1409,19 @@
                 }
                 if (distanceM < 0.5) break;
             }
-            if (distanceM <= favorite.radiusM && (!best || distanceM < best.distanceM)) {
-                best = { favorite, distanceM, index: closestIndex };
+            if (distanceM <= savedPlace.radiusM && (!best || distanceM < best.distanceM)) {
+                best = { savedPlace, distanceM, index: closestIndex };
             }
         }
         return best;
     }
 
-    function favoriteVisits(track, favorites) {
-        return favorites
-            .flatMap(favorite => visitsFromDistances(
+    function savedPlaceVisits(track, savedPlaces) {
+        return savedPlaces
+            .flatMap(savedPlace => visitsFromDistances(
                 track,
-                trackDistancesToPoint(track, favorite.lat, favorite.lon, favorite.radiusM),
-                { favorite },
+                trackDistancesToPoint(track, savedPlace.lat, savedPlace.lon, savedPlace.radiusM),
+                { savedPlace },
             ))
             .sort(byTrackOrder);
     }
@@ -1567,10 +1593,10 @@
         items.flatMap((item, index) => (predicate(item, index) ? [index] : []));
 
     // Settlements have absolute priority. Named roads fill only unused slots.
-    // Interior favorites and kept places occupy normal places in the limit;
+    // Interior saved places and kept places occupy normal places in the limit;
     // the first and last displayed route points do not consume it.
     function compactRouteRuns(allRuns, track) {
-        const isForced = run => Boolean(run.favorite || run.kept);
+        const isForced = run => Boolean(run.saved || run.kept);
         // A ride starts and finishes somewhere with a name people recognise, so
         // a street the route merely began on is dropped rather than promoted
         // into the first or last slot.
@@ -1650,11 +1676,11 @@
     }
 
     // Every event that may reach the name, in track order: one per passage the
-    // user has not blocked, plus the favorites the passages never covered.
+    // user has not blocked, plus the saved places the passages never covered.
     // `suppressed` collects what the block list took out, for the log.
     function routeEvents(passages, track, preferences, shouldLog) {
-        const { favorites, blockedNames, kept: keptNames, dropped } = preferences;
-        const visits = favoriteVisits(track, favorites);
+        const { savedPlaces, blockedNames, kept: keptNames, dropped } = preferences;
+        const visits = savedPlaceVisits(track, savedPlaces);
         const blockedKeys = nameKeys(blockedNames);
         const keptKeys = nameKeys(keptNames);
         const droppedKeys = nameKeys(dropped);
@@ -1670,8 +1696,8 @@
         };
 
         for (const passage of passages) {
-            const match = closestFavoriteForPassage(passage, track, favorites);
-            const name = match?.favorite.name || passage.baseName;
+            const match = closestSavedPlaceForPassage(passage, track, savedPlaces);
+            const name = match?.savedPlace.name || passage.baseName;
             if (!name) continue;
             const { kept, hidden } = nameState(name);
             if (hidden) {
@@ -1681,12 +1707,13 @@
 
             if (match) {
                 for (const visit of visits) {
-                    if (visit.favorite.id === match.favorite.id && trackRangesOverlap(visit, passage)) {
+                    if (visit.savedPlace.id === match.savedPlace.id
+                        && trackRangesOverlap(visit, passage)) {
                         coveredVisits.add(visit);
                     }
                 }
                 if (shouldLog) {
-                    log(`Favorite ${rangeLabel(passage)}: ${match.favorite.name}`
+                    log(`Saved place ${rangeLabel(passage)}: ${match.savedPlace.name}`
                         + ` (${match.distanceM.toFixed(0)} m from saved address)`);
                 }
             }
@@ -1696,11 +1723,11 @@
                 km: passage.km,
                 fromKm: passage.fromKm,
                 toKm: passage.toKm,
-                favorite: Boolean(match),
+                saved: Boolean(match),
                 orderIndex: match?.index ?? passage.anchor,
-                lat: match?.favorite.lat ?? passage.lat,
-                lon: match?.favorite.lon ?? passage.lon,
-                featureKind: match ? 'favorite' : passage.featureKind,
+                lat: match?.savedPlace.lat ?? passage.lat,
+                lon: match?.savedPlace.lon ?? passage.lon,
+                featureKind: match ? 'saved' : passage.featureKind,
                 roadType: passage.roadType || null,
                 kept,
             });
@@ -1708,25 +1735,25 @@
 
         for (const visit of visits) {
             if (coveredVisits.has(visit)) continue;
-            const { kept, hidden } = nameState(visit.favorite.name);
+            const { kept, hidden } = nameState(visit.savedPlace.name);
             if (hidden) {
-                suppressed[hidden].add(visit.favorite.name);
+                suppressed[hidden].add(visit.savedPlace.name);
                 continue;
             }
             if (shouldLog) {
-                log(`Favorite ${rangeLabel(visit)}: ${visit.favorite.name}`
+                log(`Saved place ${rangeLabel(visit)}: ${visit.savedPlace.name}`
                     + ` (${visit.distanceM.toFixed(0)} m from saved address; full-track visit)`);
             }
             events.push({
-                name: visit.favorite.name,
+                name: visit.savedPlace.name,
                 km: visit.km,
                 fromKm: visit.fromKm,
                 toKm: visit.toKm,
-                favorite: true,
+                saved: true,
                 orderIndex: visit.index,
-                lat: visit.favorite.lat,
-                lon: visit.favorite.lon,
-                featureKind: 'favorite',
+                lat: visit.savedPlace.lat,
+                lon: visit.savedPlace.lon,
+                featureKind: 'saved',
                 roadType: null,
                 kept,
             });
@@ -1736,7 +1763,7 @@
         return { events, suppressed };
     }
 
-    // Passing the same place twice in a row is one mention; a favorite or a
+    // Passing the same place twice in a row is one mention; a saved place or a
     // settlement outranks the road name it shares its stretch of track with.
     function mergeAdjacentEvents(events) {
         const runs = [];
@@ -1749,10 +1776,10 @@
             last.km += event.km;
             last.fromKm = Math.min(last.fromKm, event.fromKm);
             last.toKm = Math.max(last.toKm, event.toKm);
-            last.favorite ||= event.favorite;
+            last.saved ||= event.saved;
             last.kept ||= event.kept;
-            if (event.favorite) {
-                last.featureKind = 'favorite';
+            if (event.saved) {
+                last.featureKind = 'saved';
             } else if (event.featureKind === 'place' && last.featureKind === 'road') {
                 last.featureKind = 'place';
             }
@@ -1764,14 +1791,14 @@
     // block list took out, and what did not fit.
     function logRouteSelection(compacted, runs, suppressed, track) {
         const count = predicate => compacted.filter(predicate).length;
-        const places = count(run => !run.favorite && run.featureKind === 'place');
-        const roads = count(run => !run.favorite && run.featureKind === 'road');
-        const favorites = count(run => run.favorite);
-        const kept = count(run => run.kept && !run.favorite);
+        const places = count(run => !run.saved && run.featureKind === 'place');
+        const roads = count(run => !run.saved && run.featureKind === 'road');
+        const savedPlaces = count(run => run.saved);
+        const kept = count(run => run.kept && !run.saved);
         log(`Map extent ${routeMapExtentKm(track).toFixed(1)} km: `
             + `${places} settlements`
             + (roads ? ` + ${roads} named-road fallbacks` : '')
-            + ` + ${favorites} favorites`
+            + ` + ${savedPlaces} saved places`
             + (kept ? ` (${kept} kept for this ride)` : ''));
         if (suppressed.blocked.size > 0) {
             log(`Blocked from the name: ${Array.from(suppressed.blocked).join(', ')}`);
@@ -1914,44 +1941,44 @@
         updateAdjustButton();
     }
 
-    function favoriteFromForm(existing, passage, name, radiusText) {
+    function savedPlaceFromForm(existing, passage, name, radiusText) {
         const trimmedName = collapseWhitespace(name);
         if (!isUsablePlaceName(trimmedName)) {
             throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
         }
         const radiusM = Number(String(radiusText).replace(',', '.'));
         if (!isUsableRadius(radiusM)) {
-            throw new Error(`The radius must be a number from ${CONFIG.favoriteRadiusMinM}`
-                + ` to ${CONFIG.favoriteRadiusMaxM} metres.`);
+            throw new Error(`The radius must be a number from ${CONFIG.savedPlaceRadiusMinM}`
+                + ` to ${CONFIG.savedPlaceRadiusMaxM} metres.`);
         }
 
-        const favorite = normalizeFavorite({
-            id: existing?.id || createFavoriteId(),
+        const savedPlace = normalizeSavedPlace({
+            id: existing?.id || createSavedPlaceId(),
             name: trimmedName,
             lat: existing?.lat ?? passage?.lat,
             lon: existing?.lon ?? passage?.lon,
             radiusM,
             address: existing?.address || passage?.address || passage?.baseName || '',
         });
-        if (!favorite) throw new Error('That place has no usable coordinates.');
-        return favorite;
+        if (!savedPlace) throw new Error('That place has no usable coordinates.');
+        return savedPlace;
     }
 
-    function saveFavorite(favorite) {
-        const favorites = loadFavorites();
-        const index = favorites.findIndex(item => item.id === favorite.id);
+    function storeSavedPlace(savedPlace) {
+        const savedPlaces = loadSavedPlaces();
+        const index = savedPlaces.findIndex(item => item.id === savedPlace.id);
         if (index >= 0) {
-            favorites[index] = favorite;
+            savedPlaces[index] = savedPlace;
         } else {
-            favorites.push(favorite);
+            savedPlaces.push(savedPlace);
         }
-        saveFavorites(favorites);
+        storeSavedPlaces(savedPlaces);
         refreshActivityName();
         return true;
     }
 
-    function removeFavorite(favoriteId) {
-        saveFavorites(loadFavorites().filter(item => item.id !== favoriteId));
+    function removeSavedPlace(savedPlaceId) {
+        storeSavedPlaces(loadSavedPlaces().filter(item => item.id !== savedPlaceId));
         refreshActivityName();
         return true;
     }
@@ -2019,10 +2046,10 @@
         container.append(row);
     }
 
-    // The name and radius of a favorite are edited in the dialog itself: modal
+    // The name and radius of a saved place are edited in the dialog itself: modal
     // prompts stack up, cannot show what is being edited and are blocked in
     // some browsers.
-    function appendFavoriteEditor(panel, state, render) {
+    function appendPlaceEditor(panel, state, render) {
         const editing = state.editing;
         if (!editing) return;
         const target = editing.existing || editing.passage;
@@ -2031,7 +2058,7 @@
             editing.existing ? 'Rename this place' : 'Name this place');
 
         const nameInput = createDialogInput({
-            id: 'strava-route-favorite-name-input',
+            id: 'strava-route-place-name-input',
             value: state.editing.name,
             placeholder: 'Name to use in the title',
             maxLength: CONFIG.maxPlaceNameLength,
@@ -2041,10 +2068,10 @@
         });
 
         const radiusInput = createDialogInput({
-            id: 'strava-route-favorite-radius-input',
+            id: 'strava-route-place-radius-input',
             className: 'strava-route-field strava-route-field--narrow',
             value: state.editing.radiusM,
-            placeholder: `Radius ${CONFIG.favoriteRadiusMinM}–${CONFIG.favoriteRadiusMaxM} m`,
+            placeholder: `Radius ${CONFIG.savedPlaceRadiusMinM}–${CONFIG.savedPlaceRadiusMaxM} m`,
         });
         radiusInput.addEventListener('input', () => {
             state.editing.radiusM = radiusInput.value;
@@ -2063,7 +2090,7 @@
         form.addEventListener('submit', event => {
             event.preventDefault();
             try {
-                saveFavorite(favoriteFromForm(
+                storeSavedPlace(savedPlaceFromForm(
                     editing.existing,
                     editing.passage,
                     state.editing.name,
@@ -2117,7 +2144,7 @@
         state.search.error = false;
         render();
         try {
-            const candidates = await searchFavoriteAddresses(query);
+            const candidates = await searchAddresses(query);
             state.search.candidates = candidates;
             state.search.status = candidates.length
                 ? `Found ${candidates.length}. Choose the correct address.`
@@ -2139,7 +2166,7 @@
         const form = createElement('form', 'strava-route-form');
 
         const input = createDialogInput({
-            id: 'strava-route-favorite-address-input',
+            id: 'strava-route-address-input',
             value: state.search.query,
             placeholder: 'Street, house number, city',
             autocomplete: 'street-address',
@@ -2160,7 +2187,7 @@
         for (const candidate of state.search.candidates) {
             const addButton = createDialogButton('☆ Save', true);
             addButton.addEventListener('click', () =>
-                openFavoriteEditor(state, render, { passage: candidate, anchor: candidate }));
+                openPlaceEditor(state, render, { passage: candidate, anchor: candidate }));
             appendDialogRow(results, candidate.baseName, candidate.address, [addButton]);
             appendEditorAt(results, state, render, candidate);
         }
@@ -2186,7 +2213,7 @@
     // activity, not a saved place worth carrying to another browser.
     function backupPayload() {
         return {
-            favorites: loadFavorites(),
+            savedPlaces: loadSavedPlaces(),
             blockedNames: loadBlockedNames(),
         };
     }
@@ -2198,19 +2225,19 @@
         } catch {
             throw new Error('That is not valid JSON.');
         }
-        const favorites = Array.isArray(parsed) ? parsed : parsed?.favorites;
-        if (!Array.isArray(favorites)) {
-            throw new Error('A backup must contain a "favorites" array.');
+        const savedPlaces = Array.isArray(parsed) ? parsed : parsed?.savedPlaces;
+        if (!Array.isArray(savedPlaces)) {
+            throw new Error('A backup must contain a "savedPlaces" array.');
         }
-        const normalized = favorites.map(normalizeFavorite).filter(Boolean);
-        if (favorites.length > 0 && normalized.length === 0) {
-            throw new Error('No usable favorite in that backup.');
+        const normalized = savedPlaces.map(normalizeSavedPlace).filter(Boolean);
+        if (savedPlaces.length > 0 && normalized.length === 0) {
+            throw new Error('No usable saved place in that backup.');
         }
-        saveFavorites(normalized);
+        storeSavedPlaces(normalized);
         const blocked = saveNameList(STORAGE_KEY.blockedNames, parsed?.blockedNames);
         refreshActivityName();
         return {
-            favorites: normalized.length,
+            savedPlaces: normalized.length,
             blockedNames: blocked.length,
         };
     }
@@ -2252,7 +2279,7 @@
                 return;
             }
             const imported = applyBackup(textarea.value);
-            log(`Imported ${imported.favorites} favorites`
+            log(`Imported ${imported.savedPlaces} saved places`
                 + ` and ${imported.blockedNames} blocked names`);
             state.backup = { text: null, armed: false, status: 'Backup imported.' };
             render();
@@ -2337,27 +2364,27 @@
         const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
         if (!analysis) return null;
 
-        const favorites = loadFavorites();
+        const savedPlaces = loadSavedPlaces();
         const landmarks = analysis.passages.map(passage => {
-            const match = closestFavoriteForPassage(passage, analysis.track, favorites);
-            return { passage, match, name: match?.favorite.name || passage.baseName };
+            const match = closestSavedPlaceForPassage(passage, analysis.track, savedPlaces);
+            return { passage, match, name: match?.savedPlace.name || passage.baseName };
         });
         const byName = new Map();
         for (const landmark of landmarks) {
             if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
         }
-        return { names: currentRouteNames() || [], landmarks, byName, favorites };
+        return { names: currentRouteNames() || [], landmarks, byName, savedPlaces };
     }
 
     // One place builds the editor state, so a chip, a landmark, a saved place
     // and a search result all open the same form — under whatever was clicked.
-    function openFavoriteEditor(state, render, { existing = null, passage = null, anchor }) {
+    function openPlaceEditor(state, render, { existing = null, passage = null, anchor }) {
         state.editing = {
             existing,
             passage,
             anchor,
             name: existing?.name || passage?.baseName || '',
-            radiusM: String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
+            radiusM: String(existing?.radiusM ?? CONFIG.savedPlaceRadiusM),
             error: '',
         };
         state.confirmingDeleteId = null;
@@ -2365,7 +2392,7 @@
     }
 
     function appendEditorAt(container, state, render, anchor) {
-        if (state.editing?.anchor === anchor) appendFavoriteEditor(container, state, render);
+        if (state.editing?.anchor === anchor) appendPlaceEditor(container, state, render);
     }
 
     const NAME_ANCHOR = 'name';
@@ -2408,22 +2435,22 @@
     function createNameChip(name, view, state, render) {
         const chip = createElement('div', 'strava-route-chip');
         const landmark = view.byName.get(name);
-        // A favorite can reach the name through a full-track visit that no
+        // A saved place can reach the name through a full-track visit that no
         // passage covers, so the chip falls back to matching it by name.
-        const favorite = landmark?.match?.favorite
-            || view.favorites.find(saved => saved.name === name)
+        const savedPlace = landmark?.match?.savedPlace
+            || view.savedPlaces.find(saved => saved.name === name)
             || null;
 
         const renameButton = createElement('button', 'strava-route-chip-name', {
             type: 'button',
             textContent: name,
-            title: favorite || landmark
+            title: savedPlace || landmark
                 ? `Rename ${name} wherever a route comes near it`
                 : `${name} has no place to rename`,
         });
-        renameButton.disabled = !favorite && !landmark;
-        renameButton.addEventListener('click', () => openFavoriteEditor(state, render, {
-            existing: favorite,
+        renameButton.disabled = !savedPlace && !landmark;
+        renameButton.addEventListener('click', () => openPlaceEditor(state, render, {
+            existing: savedPlace,
             passage: landmark?.passage || null,
             anchor: NAME_ANCHOR,
         }));
@@ -2476,9 +2503,10 @@
             render();
         }));
 
-        const renameButton = createDialogButton(match ? `★ ${match.favorite.name}` : '★ Rename');
-        renameButton.addEventListener('click', () => openFavoriteEditor(state, render, {
-            existing: match?.favorite || null,
+        const renameButton = createDialogButton(
+            match ? `★ ${match.savedPlace.name}` : '★ Rename');
+        renameButton.addEventListener('click', () => openPlaceEditor(state, render, {
+            existing: match?.savedPlace || null,
             passage,
             anchor: passage,
         }));
@@ -2505,34 +2533,34 @@
     // A saved name replaces the OSM one on every ride that comes near it, so
     // this is the list of the places the rider has words of their own for.
     function appendSavedPlaces(panel, state, render) {
-        appendListSection(panel, 'Saved places', loadFavorites(), {
+        appendListSection(panel, 'Saved places', loadSavedPlaces(), {
             empty: 'No saved names yet. Rename a place above, or add one by address.',
-            row: favorite => {
+            row: savedPlace => {
                 const editButton = createDialogButton('Edit');
                 editButton.addEventListener('click', () =>
-                    openFavoriteEditor(state, render, { existing: favorite, anchor: favorite }));
+                    openPlaceEditor(state, render, { existing: savedPlace, anchor: savedPlace }));
 
-                const confirming = state.confirmingDeleteId === favorite.id;
+                const confirming = state.confirmingDeleteId === savedPlace.id;
                 const deleteButton = createDialogButton(confirming ? 'Confirm delete' : 'Delete');
                 deleteButton.addEventListener('click', () => runDialogAction(() => {
                     if (!confirming) {
-                        state.confirmingDeleteId = favorite.id;
+                        state.confirmingDeleteId = savedPlace.id;
                         render();
                         return;
                     }
-                    removeFavorite(favorite.id);
+                    removeSavedPlace(savedPlace.id);
                     state.confirmingDeleteId = null;
                     render();
                 }));
 
-                const coordinates = `${favorite.lat.toFixed(5)}, ${favorite.lon.toFixed(5)}`;
+                const coordinates = `${savedPlace.lat.toFixed(5)}, ${savedPlace.lon.toFixed(5)}`;
                 appendDialogRow(
                     panel,
-                    `★ ${favorite.name}`,
-                    `${favorite.address || coordinates} · ${favorite.radiusM} m`,
+                    `★ ${savedPlace.name}`,
+                    `${savedPlace.address || coordinates} · ${savedPlace.radiusM} m`,
                     [editButton, deleteButton],
                 );
-                appendEditorAt(panel, state, render, favorite);
+                appendEditorAt(panel, state, render, savedPlace);
             },
         });
         appendAddressSearch(panel, state, render);
@@ -2592,7 +2620,7 @@
             const route = routePlaceNames(routeFeatures.passages, track);
             lastRouteAnalysis = { activityId, track, passages: route.passages };
             if (route.names.length === 0) {
-                throw new Error('The route has no named OSM place, road, or favorite radius.');
+                throw new Error('The route has no named OSM place, road, or savedPlace radius.');
             }
 
             // Logged after the fact: an over-long narrative reaches the field
@@ -2677,9 +2705,10 @@
         closeObserver.observe(container, { childList: true, subtree: true });
     }
 
-    migrateSettingToUserscriptStorage(STORAGE_KEY.favorites);
+    forgetRetiredSettings();
+    migrateSettingToUserscriptStorage(STORAGE_KEY.savedPlaces);
     migrateSettingToUserscriptStorage(STORAGE_KEY.blockedNames);
-    migrateSettingToUserscriptStorage(STORAGE_KEY.keptNames);
+    migrateSettingToUserscriptStorage(STORAGE_KEY.rideNames);
     if (injectButton()) watchInjectedButton();
     else watchForEditForm();
 })();
