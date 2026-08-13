@@ -48,6 +48,21 @@ test('shows the name before the rarely touched settings', async () => {
         'one chip per part of the title, in the order they are written');
 });
 
+test('keeps roads separate and collapsed when settlements fill the name', async () => {
+    const { fixture, renamer } = loadScenario('dense-settlements');
+
+    assert.equal(await renamer.generate(), fixture.expected);
+    openDialog(renamer);
+
+    const collapsed = dialogButton(renamer, '▸ Roads (1)');
+    assert.doesNotMatch(dialogText(renamer), /Burger Chaussee/);
+
+    collapsed.click();
+
+    assert.ok(dialogButton(renamer, '▾ Roads (1)'));
+    assert.match(dialogText(renamer), /Burger Chaussee/);
+});
+
 test('renames a place from its chip in the name', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const { renamer } = loadScenario('loop-with-revisit');

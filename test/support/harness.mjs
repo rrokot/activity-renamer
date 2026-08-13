@@ -217,7 +217,11 @@ export function loadRenamer(options = {}) {
         GM: {
             xmlHttpRequest: details => {
                 inFlightRequests++;
-                respond(String(details.url), { method: details.method, body: details.data }, 'gm')
+                respond(String(details.url), {
+                    method: details.method,
+                    body: details.data,
+                    headers: details.headers,
+                }, 'gm')
                     .then(async response => details.onload?.({
                         status: response.status,
                         responseText: await response.text(),

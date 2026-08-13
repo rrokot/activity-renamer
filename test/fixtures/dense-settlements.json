@@ -13,6 +13,14 @@
         { "id": 240090448, "name": "Briesen - Brjazyna", "place": "village", "lat": 51.805, "lon": 14.17 },
         { "id": 240090449, "name": "Kolkwitz - Gołkojce", "place": "village", "lat": 51.77, "lon": 14.22 }
     ],
+    "roads": [
+        {
+            "id": 41000020,
+            "name": "Burger Chaussee",
+            "highway": "secondary",
+            "geometry": [[51.7925, 14.2875], [51.8375, 14.2565]]
+        }
+    ],
     "waypoints": [
         [51.757, 14.332],
         [51.7925, 14.2875],

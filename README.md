@@ -31,6 +31,7 @@ Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
 ## Edit Name
 
 - Add, rename or remove places for the current activity.
+- Browse named roads in a separate collapsible list.
 - Save preferred place names for future activities.
 - Block unwanted names.
 - Back up or restore saved places and blocked names.

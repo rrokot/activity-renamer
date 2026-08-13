@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.0
+// @version      0.1.2
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -67,7 +67,7 @@
         'https://overpass.private.coffee/api/interpreter',
     ];
     const CACHE_PREFIX = {
-        routeFeatures: 'activity_renamer_features_v1_',
+        routeFeatures: 'activity_renamer_features_v2_',
     };
     const STORAGE_KEY = {
         savedPlaces: 'activity_renamer_saved_places_v1',
@@ -147,6 +147,19 @@
 }
 .activity-renamer-overlay .activity-renamer-header h3 { margin: 0; }
 .activity-renamer-overlay .activity-renamer-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
+.activity-renamer-overlay .activity-renamer-section-toggle {
+    display: block;
+    width: 100%;
+    margin: var(--space-md) 0 var(--space-3xs);
+    padding: 0;
+    color: var(--color-extendedneutraln1);
+    background: none;
+    border: none;
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
 .activity-renamer-overlay .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
     color: var(--color-extendedneutraln3);
@@ -279,7 +292,7 @@
     const EDIT_NAME_BUTTON_ID = 'activity-renamer-edit-name-btn';
     const NAME_DIALOG_ID = 'activity-renamer-name-dialog';
     const LOG_PREFIX = '[Activity Renamer]';
-    const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
+    const TRANSIENT_OVERPASS_STATUSES = new Set([406, 429, 502, 503, 504]);
 
     // The OSM place ranks worth naming a route after: anything smaller is a
     // hamlet or a farm the rider would not call a destination.
@@ -812,6 +825,7 @@
                     headers: {
                         'Accept': 'application/json',
                         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                        'User-Agent': 'Activity-Renamer (https://github.com/rrokot/activity-renamer)',
                     },
                     body: `data=${encodeURIComponent(query)}`,
                 });
@@ -1216,13 +1230,7 @@
 
         const features = await fetchRouteFeatures(track, onRetry);
         const placePassages = passagesNearPlaces(track, features.places);
-        const placeRunCount = placePassages.reduce((count, passage, index) =>
-            index > 0 && placePassages[index - 1].baseName === passage.baseName
-                ? count
-                : count + 1, 0);
-        const roadPassages = placeRunCount < automaticPlaceLimit(track)
-            ? passagesNearRoads(track, features.roads)
-            : [];
+        const roadPassages = passagesNearRoads(track, features.roads);
         const passages = placePassages.concat(roadPassages).sort(byTrackOrder);
         cacheRoutePassages(
             activityId,
@@ -2221,6 +2229,7 @@
     const DIALOG_SECTIONS = [
         appendThisName,
         appendAlsoPassed,
+        appendRoads,
         appendSavedPlaces,
         appendBlockedNames,
         appendBackupSection,
@@ -2252,6 +2261,7 @@
             view: null,
             editing: null,
             confirmingDeleteId: null,
+            roadsOpen: false,
             search: { query: '', candidates: [], status: '', error: false, busy: false },
             backup: { text: null, armed: false, status: '' },
         };
@@ -2379,9 +2389,9 @@
         return chip;
     }
 
-    // Everything the route came near that the name does not mention: the places
-    // the automatic selection had no slot for, the ones taken out by hand, and
-    // the ones the block list silences everywhere.
+    // Settlements the route came near but the name does not mention: those the
+    // automatic selection had no slot for, those taken out by hand, and those
+    // the block list silences everywhere.
     function appendAlsoPassed(panel, state, render) {
         const view = state.view;
         if (!view) return;
@@ -2392,18 +2402,63 @@
         appendListSection(
             panel,
             'Also passed',
-            view.landmarks.filter(landmark => landmark.name && !inName.has(landmark.name)),
+            view.landmarks.filter(landmark =>
+                landmark.passage.featureKind !== 'road'
+                && landmark.name
+                && !inName.has(landmark.name)),
             {
-                empty: 'Every landmark of this route is in the name.',
+                empty: 'Every settlement of this route is in the name.',
                 row: landmark => {
-                    appendAlsoPassedRow(panel, landmark, { dropped, blocked }, state, render);
+                    appendLandmarkRow(panel, landmark, { dropped, blocked }, state, render);
                     appendEditorAt(panel, state, render, landmark.passage);
                 },
             },
         );
     }
 
-    function appendAlsoPassedRow(panel, landmark, keys, state, render) {
+    function uniqueLandmarksByName(landmarks) {
+        const byName = new Map();
+        for (const landmark of landmarks) {
+            if (landmark.name && !byName.has(landmark.name)) {
+                byName.set(landmark.name, landmark);
+            }
+        }
+        return Array.from(byName.values());
+    }
+
+    function appendRoads(panel, state, render) {
+        const view = state.view;
+        if (!view) return;
+
+        const inName = new Set(view.names);
+        const roads = uniqueLandmarksByName(view.landmarks.filter(landmark =>
+            landmark.passage.featureKind === 'road' && !inName.has(landmark.name)));
+        const toggle = createDialogButton(`${state.roadsOpen ? '▾' : '▸'} Roads (${roads.length})`);
+        toggle.className = 'activity-renamer-section-toggle';
+        toggle.setAttribute('aria-expanded', String(state.roadsOpen));
+        toggle.setAttribute('aria-controls', 'activity-renamer-roads');
+        toggle.addEventListener('click', () => {
+            state.roadsOpen = !state.roadsOpen;
+            render();
+        });
+        panel.append(toggle);
+        if (!state.roadsOpen) return;
+
+        const container = createElement('div', '', { id: 'activity-renamer-roads' });
+        if (roads.length === 0) {
+            container.append(createDialogNote('No other named roads were passed.'));
+        } else {
+            const dropped = nameKeys(loadRideNames().dropped);
+            const blocked = nameKeys(loadBlockedNames());
+            for (const road of roads) {
+                appendLandmarkRow(container, road, { dropped, blocked }, state, render);
+                appendEditorAt(container, state, render, road.passage);
+            }
+        }
+        panel.append(container);
+    }
+
+    function appendLandmarkRow(panel, landmark, keys, state, render) {
         const { passage, match, name } = landmark;
 
         const addButton = createDialogButton('+', true);
