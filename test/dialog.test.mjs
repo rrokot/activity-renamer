@@ -7,7 +7,6 @@ import {
     dialogField,
     dialogText,
     nameChip,
-    namePreview,
     openDialog,
     sectionTitles,
     submitForm,
@@ -33,14 +32,13 @@ const burgPlace = {
 
 // The dialog opens on the sentence it is about, then the places that could
 // join it, and only then the settings behind them.
-test('reads from this name down to the rarely touched settings', async () => {
+test('shows the name before the rarely touched settings', async () => {
     const { renamer } = loadScenario('loop-with-revisit');
 
     await renamer.generate();
     openDialog(renamer);
 
     assert.deepEqual(sectionTitles(renamer), [
-        'This name (7)',
         'Also passed (0)',
         'Saved places (0)',
         'Never in a name (0)',
@@ -66,7 +64,6 @@ test('renames a place from its chip in the name', async () => {
 
     assert.equal(renamer.alerts.length, 0, 'nothing is asked through a modal prompt');
     assert.match(renamer.name, /Gurkenpause/);
-    assert.equal(namePreview(renamer), renamer.name, 'the preview mirrors the title');
     assert.equal(JSON.parse(renamer.userscriptStore.get(SAVED_PLACES_KEY)).length, 1);
     assert.ok(chipNames(renamer).includes('Gurkenpause'));
 });

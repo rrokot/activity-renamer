@@ -300,8 +300,8 @@ export function loadRenamer(options = {}) {
         get button() {
             return byId('activity-renamer-rename-btn');
         },
-        get adjustButton() {
-            return byId('activity-renamer-adjust-btn');
+        get editNameButton() {
+            return byId('activity-renamer-edit-name-btn');
         },
         get dialog() {
             return byId('activity-renamer-name-dialog');

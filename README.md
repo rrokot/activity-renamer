@@ -1,37 +1,36 @@
 # Activity Renamer
 
-Activity Renamer is a Tampermonkey userscript that creates a Strava activity
-name from the places visited along the route:
+Tampermonkey userscript that names Strava activities by places along the route.
 
-    Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
+```text
+Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
+```
 
-## How the name is generated
+## Naming
 
-- Consecutive points near one place become a single visit; later revisits stay.
-- Settlements take priority; named roads only fill gaps.
-- 3–7 geographically spread stops represent the route, including its ends.
-- Saved and manual choices override the selection; middle stops go first if the
-  title is too long.
+- Orders visited places along the route.
+- Merges one continuous visit but preserves later revisits.
+- Prioritizes settlements; named roads fill gaps.
+- Selects geographically spread places and keeps the route ends.
+- Applies saved and manual choices; removes middle places if the title is too
+  long.
 
 ## Installation
 
-1. Open the Tampermonkey dashboard and create a new userscript.
-2. Replace its contents with `activity-renamer.user.js`.
-3. Save the script.
+1. Install [Tampermonkey](https://www.tampermonkey.net/).
+2. Open [Activity Renamer](https://raw.githubusercontent.com/rrokot/activity-renamer/master/activity-renamer.user.js).
+3. Confirm the installation.
 
 ## Usage
 
-1. Open the edit page of a Strava activity.
-2. Click **Generate from Geo** next to the title.
-3. Review the generated name and, if needed, click **✎ Adjust**.
-4. Save the activity in Strava.
+1. Open a Strava activity's edit page.
+2. Click **Build Name**.
+3. Optionally edit the result with **✎ Edit Name**.
+4. Save the activity.
 
-## Adjusting a name
+## Edit Name
 
-The **✎ Adjust** dialog lets you:
-
-- rename or remove a place from the current activity;
-- add another place passed along the route;
-- save a preferred place name for future activities;
-- prevent an unwanted place from appearing in generated names;
-- back up and restore saved places and blocked names.
+- Add, rename or remove places for the current activity.
+- Save preferred place names for future activities.
+- Block unwanted names.
+- Back up or restore saved places and blocked names.

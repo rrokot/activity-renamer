@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      6.0.5
+// @version      6.0.9
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -43,7 +43,7 @@
     };
 
     const STRINGS = {
-        idle: 'Generate from Geo',
+        idle: 'Build Name',
         downloading: '⌛ Downloading...',
         analyzing: '⌛ Analyzing...',
         places: '⌛ Loading nearby landmarks',
@@ -52,8 +52,8 @@
         error: '❌ Error',
         noGps: 'No GPS data found (manual entry or indoor activity?)',
         noId: 'Could not detect activity ID from URL.',
-        adjust: '✎ Adjust',
-        adjustTitle: 'Adjust the generated name',
+        editName: '✎ Edit Name',
+        editNameTitle: 'Edit the activity name',
     };
 
     const API_URL = {
@@ -147,8 +147,6 @@
 }
 .activity-renamer-overlay .activity-renamer-header h3 { margin: 0; }
 .activity-renamer-overlay .activity-renamer-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
-/* Whichever section renders first opens flush with the preview above it. */
-.activity-renamer-overlay .activity-renamer-panel > h4:first-of-type { margin-top: 0; }
 .activity-renamer-overlay .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
     color: var(--color-extendedneutraln3);
@@ -226,35 +224,29 @@
 .activity-renamer-overlay .activity-renamer-chip {
     display: inline-flex;
     align-items: stretch;
-    background: var(--color-extendedneutraln7);
-    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
+    background: var(--color-coreo3);
+    border: var(--border-width-thin) solid var(--color-coreo3);
     border-radius: var(--border-radius-sm);
     overflow: hidden;
 }
 .activity-renamer-overlay .activity-renamer-chip button {
     padding: var(--space-3xs) var(--space-2xs);
-    color: var(--color-extendedneutraln1);
+    color: var(--color-corewhite);
     background: none;
     border: none;
     cursor: pointer;
 }
 .activity-renamer-overlay .activity-renamer-chip-name { font-weight: 600; }
-.activity-renamer-overlay .activity-renamer-chip button:hover { background: var(--color-extendedneutraln6); }
+.activity-renamer-overlay .activity-renamer-chip-name:hover:not([disabled]) {
+    background: var(--color-extendedorangeo2);
+}
 .activity-renamer-overlay .activity-renamer-chip-drop {
     padding-left: var(--space-3xs);
-    color: var(--color-extendedneutraln3);
-    border-left: var(--border-width-thin) solid var(--color-extendedneutraln5);
+    border-left: var(--border-width-thin) solid var(--color-corewhite);
 }
-.activity-renamer-overlay .activity-renamer-chip-drop:hover { color: var(--color-extendedredr3); }
-.activity-renamer-overlay .activity-renamer-preview-value {
-    margin: 0 0 var(--space-sm);
-    padding-left: var(--space-2xs);
-    color: var(--color-extendedneutraln3);
-    border-left: var(--divider-size-md) var(--divider-variant-solid) var(--color-coreo3);
-    font-size: 12px;
-    overflow-wrap: anywhere;
+.activity-renamer-overlay .activity-renamer-chip-drop:hover {
+    background: var(--color-extendedredr3);
 }
-.activity-renamer-overlay .activity-renamer-preview-value--empty { font-style: italic; }
 .activity-renamer-overlay .activity-renamer-backup {
     width: 100%;
     box-sizing: border-box;
@@ -284,7 +276,7 @@
     }
 
     const BUTTON_ID = 'activity-renamer-rename-btn';
-    const ADJUST_BUTTON_ID = 'activity-renamer-adjust-btn';
+    const EDIT_NAME_BUTTON_ID = 'activity-renamer-edit-name-btn';
     const NAME_DIALOG_ID = 'activity-renamer-name-dialog';
     const LOG_PREFIX = '[Activity Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
@@ -528,7 +520,7 @@
     // place this name must contain, and a place this name is better off
     // without. Saying either about every ride is what a saved place and the block
     // list are for. The store keeps one entry per activity, and only for the
-    // rides whose names were last adjusted by hand.
+    // rides whose names were last edited by hand.
     const NO_RIDE_NAMES = { kept: [], dropped: [] };
 
     function loadRideEntries() {
@@ -1819,15 +1811,15 @@
     // The button opens the name of the ride in front of the rider, so what it
     // counts is what that rider changed about it by hand — not how many places
     // are saved for every other ride.
-    function updateAdjustButton() {
-        const button = document.getElementById(ADJUST_BUTTON_ID);
+    function updateEditNameButton() {
+        const button = document.getElementById(EDIT_NAME_BUTTON_ID);
         if (!button) return;
         const { kept, dropped } = loadRideNames();
         const edits = kept.length + dropped.length;
-        button.textContent = edits > 0 ? `${STRINGS.adjust} (${edits})` : STRINGS.adjust;
+        button.textContent = edits > 0 ? `${STRINGS.editName} (${edits})` : STRINGS.editName;
         button.title = edits > 0
-            ? `${STRINGS.adjustTitle} — ${edits} change${edits === 1 ? '' : 's'} of your own`
-            : STRINGS.adjustTitle;
+            ? `${STRINGS.editNameTitle} — ${edits} change${edits === 1 ? '' : 's'} of your own`
+            : STRINGS.editNameTitle;
     }
 
     // Strava refuses an over-long title. The middle of the narrative is the
@@ -1868,7 +1860,7 @@
     function refreshActivityName() {
         const names = currentActivityNames();
         if (names && setActivityName(names)) log(`Name updated: ${names.join(' - ')}`);
-        updateAdjustButton();
+        updateEditNameButton();
     }
 
     function savedPlaceFromForm(existing, passage, name, radiusText) {
@@ -2254,8 +2246,8 @@
             if (event.target === overlay) close();
         });
 
-        // Every action mutates the dialog state and re-renders, so the name
-        // preview and the buttons can never drift apart from the stored data.
+        // Every action mutates the dialog state and re-renders, so the chips
+        // and buttons can never drift apart from the stored data.
         const state = {
             view: null,
             editing: null,
@@ -2329,13 +2321,11 @@
 
     // The name as the sentence it is: one chip per part, in the order they are
     // written. The chip's own label renames the place, the ✕ takes it out of
-    // this ride. Below them stands the exact string the title field will hold —
-    // an over-long narrative reaches it shortened, and that is worth seeing.
+    // this ride.
     function appendThisName(panel, state, render) {
         const view = state.view;
-        panel.append(createSectionTitle(view ? `This name (${view.names.length})` : 'This name'));
         if (!view) {
-            panel.append(createDialogNote('Generate the name first, then adjust it here.'));
+            panel.append(createDialogNote('Build the name first, then edit it here.'));
             return;
         }
 
@@ -2349,16 +2339,6 @@
             panel.append(chips);
         }
 
-        panel.append(createElement(
-            'p',
-            `activity-renamer-preview-value${view.names.length ? '' : ' activity-renamer-preview-value--empty'}`,
-            {
-                id: 'activity-renamer-name-preview',
-                textContent: view.names.length
-                    ? fitNameLength(view.names)
-                    : 'The title field is left alone while the name is empty.',
-            },
-        ));
         appendEditorAt(panel, state, render, NAME_ANCHOR);
     }
 
@@ -2426,15 +2406,19 @@
     function appendAlsoPassedRow(panel, landmark, keys, state, render) {
         const { passage, match, name } = landmark;
 
-        const addButton = createDialogButton('⊕ Add', true);
+        const addButton = createDialogButton('+', true);
         addButton.title = `Put ${name} into this ride’s name`;
+        addButton.setAttribute('aria-label', addButton.title);
         addButton.addEventListener('click', () => runDialogAction(() => {
             keepInThisName(name);
             render();
         }));
 
-        const renameButton = createDialogButton(
-            match ? `★ ${match.savedPlace.name}` : '★ Rename');
+        const renameButton = createDialogButton('★');
+        renameButton.title = match
+            ? `Edit the saved name ${match.savedPlace.name}`
+            : `Save a preferred name for ${name}`;
+        renameButton.setAttribute('aria-label', renameButton.title);
         renameButton.addEventListener('click', () => openPlaceEditor(state, render, {
             existing: match?.savedPlace || null,
             passage,
@@ -2442,8 +2426,12 @@
         }));
 
         const isBlocked = hasNameKey(name, keys.blocked);
-        const blockButton = createDialogButton(isBlocked ? '⛔ Blocked' : '⛔ Never');
-        blockButton.title = `Leave ${name} out of every name, on every ride`;
+        const blockButton = createDialogButton('⛔');
+        blockButton.title = isBlocked
+            ? `Allow ${name} in generated names again`
+            : `Leave ${name} out of every name, on every ride`;
+        blockButton.setAttribute('aria-label', blockButton.title);
+        blockButton.setAttribute('aria-pressed', String(isBlocked));
         blockButton.addEventListener('click', () => runDialogAction(() => {
             toggleBlockedName(name);
             render();
@@ -2589,20 +2577,20 @@
             void generateAndFillName(button);
         });
 
-        const adjustButton = createElement(
+        const editNameButton = createElement(
             'button',
             'activity-renamer-button activity-renamer-button--secondary',
-            { id: ADJUST_BUTTON_ID, type: 'button', textContent: STRINGS.adjust },
+            { id: EDIT_NAME_BUTTON_ID, type: 'button', textContent: STRINGS.editName },
         );
-        adjustButton.addEventListener('click', event => {
+        editNameButton.addEventListener('click', event => {
             event.preventDefault();
             runDialogAction(openNameDialog);
         });
 
         const wrapper = createElement('div', 'activity-renamer-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
-        wrapper.append(titleLabel, button, adjustButton);
-        runDialogAction(updateAdjustButton);
+        wrapper.append(titleLabel, button, editNameButton);
+        runDialogAction(updateEditNameButton);
         log('Button injected');
         return true;
     }

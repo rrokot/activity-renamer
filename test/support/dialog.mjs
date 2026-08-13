@@ -3,7 +3,7 @@
 // way a user reads the dialog again after it changes.
 
 export function openDialog(renamer) {
-    renamer.adjustButton.click();
+    renamer.editNameButton.click();
     return renamer.dialog;
 }
 
@@ -82,8 +82,4 @@ export function passedRowButton(renamer, label, place) {
         .find(candidate => candidate.title.includes(place));
     if (!button) throw new Error(`No "${label}" button for ${place}`);
     return button;
-}
-
-export function namePreview(renamer) {
-    return renamer.dialog.querySelector('#activity-renamer-name-preview')?.textContent ?? null;
 }
