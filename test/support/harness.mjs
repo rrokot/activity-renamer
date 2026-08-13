@@ -168,7 +168,6 @@ export function loadRenamer(options = {}) {
 
     const localStorage = createLocalStorage(storage);
     const userscriptStore = new Map(Object.entries(options.userscriptStorage || {}));
-    const clipboard = [];
     const { document, input, label } = createEditPageDocument();
     document.adoptedStyleSheets = [];
 
@@ -254,7 +253,6 @@ export function loadRenamer(options = {}) {
                 this.cssText = css;
             }
         },
-        navigator: { clipboard: { writeText: text => void clipboard.push(String(text)) } },
         alert: message => alerts.push(String(message)),
         window: {
             location: { pathname: `/activities/${activityId}/edit`, href: '' },
@@ -296,7 +294,6 @@ export function loadRenamer(options = {}) {
         timerDelays,
         localStorage,
         userscriptStore,
-        clipboard,
         observers: FakeMutationObserver.instances,
         ready,
         settle,

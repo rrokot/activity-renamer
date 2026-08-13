@@ -86,6 +86,9 @@ export class FakeElement {
     removeChild(node) {
         const index = this.children.indexOf(node);
         if (index >= 0) this.children.splice(index, 1);
+        if (node.contains?.(this.ownerDocument?.activeElement)) {
+            this.ownerDocument.activeElement = this.ownerDocument.body;
+        }
         node.parentNode = null;
         return node;
     }
@@ -103,6 +106,8 @@ export class FakeElement {
     }
 
     focus() {
+        if (this.ownerDocument?.activeElement) this.ownerDocument.activeElement.focused = false;
+        if (this.ownerDocument) this.ownerDocument.activeElement = this;
         this.focused = true;
     }
 
@@ -128,7 +133,12 @@ export class FakeElement {
 
     // Test helper: fire a listener the way a real click would.
     click(extra = {}) {
+        this.focus();
         return this.dispatchEvent({ type: 'click', ...extra });
+    }
+
+    contains(node) {
+        return node === this || Array.from(this.walk()).includes(node);
     }
 
     * walk() {
@@ -140,6 +150,9 @@ export class FakeElement {
     }
 
     matches(selector) {
+        if (selector.includes(',')) {
+            return selector.split(',').some(part => this.matches(part.trim()));
+        }
         const byId = selector.match(/^#(.+)$/);
         if (byId) return this.id === byId[1];
 
@@ -178,6 +191,7 @@ class FakeDocument extends FakeElement {
         this.body = new FakeElement('body', this);
         this.append(this.documentElement);
         this.documentElement.append(this.head, this.body);
+        this.activeElement = this.body;
     }
 
     createElement(tagName) {

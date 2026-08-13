@@ -9,6 +9,8 @@ import {
     overpassElements,
     toGpx,
 } from './support/harness.mjs';
+
+const MAX_NAME_PLACES_KEY = 'activity_renamer_max_name_places_v1';
 test('reuses the cached landmarks on the second run', async () => {
     const { fixture, renamer } = loadScenario('loop-with-revisit');
 
@@ -43,6 +45,24 @@ test('discards a cache written under different naming settings', async () => {
 
     assert.equal(name, fixture.expected);
     assert.equal(renamer.overpassRequestCount(), 1, 'a stale signature forces a refetch');
+});
+
+test('reuses the feature cache after the maximum name places setting changes', async () => {
+    const first = loadScenario('dense-settlements', {
+        userscriptStorage: { [MAX_NAME_PLACES_KEY]: JSON.stringify(3) },
+    });
+    await first.renamer.generate();
+
+    const cacheKey = `activity_renamer_features_v2_${first.fixture.activityId}`;
+    const cached = first.renamer.localStorage.getItem(cacheKey);
+    const second = loadScenario('dense-settlements', {
+        storage: { [cacheKey]: cached },
+        userscriptStorage: { [MAX_NAME_PLACES_KEY]: JSON.stringify(12) },
+    });
+
+    assert.equal(await second.renamer.generate(), second.fixture.expected);
+    assert.equal(second.renamer.overpassRequestCount(), 0,
+        'the local name limit does not invalidate cached OSM passages');
 });
 
 test('falls over to another Overpass mirror when one is busy', async () => {

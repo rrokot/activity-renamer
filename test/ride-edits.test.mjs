@@ -4,11 +4,9 @@ import test from 'node:test';
 import {
     chipNames,
     dialogButton,
-    dialogField,
     nameChip,
     openDialog,
     passedRowButton,
-    typeInto,
 } from './support/dialog.mjs';
 import { loadFixture, loadScenario } from './support/harness.mjs';
 
@@ -68,6 +66,7 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)), ['Guhrow']);
     assert.equal(renamer.name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
 
+    dialogButton(renamer, 'Never in a name (1)').click();
     dialogButton(renamer, 'Unblock').click();
     passedRowButton(renamer, '+', 'Guhrow').click();
 
@@ -149,28 +148,5 @@ test('adding a blocked place overrules the block for this ride only', async () =
         JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)),
         ['Guhrow'],
         'the block still speaks for every other ride',
-    );
-});
-
-test('carries blocked names through a backup', async () => {
-    const { renamer } = loadScenario('loop-with-revisit', {
-        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
-    });
-    await renamer.ready;
-
-    openDialog(renamer);
-    const backup = JSON.parse(dialogField(renamer, 'activity-renamer-backup-input').value);
-
-    assert.deepEqual(backup.blockedNames, ['Guhrow']);
-
-    typeInto(dialogField(renamer, 'activity-renamer-backup-input'),
-        JSON.stringify({ savedPlaces: [], blockedNames: ['Werben', 'Werben', 'Dissen'] }));
-    dialogButton(renamer, 'Import').click();
-    dialogButton(renamer, 'Replace everything').click();
-
-    assert.deepEqual(
-        JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)),
-        ['Werben', 'Dissen'],
-        'duplicates are collapsed on the way in',
     );
 });

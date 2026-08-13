@@ -65,7 +65,7 @@ Test responsibilities:
 |---|---|
 | `name.test.mjs` | Narrative order, revisits, roads, endpoints, slots and title length |
 | `ride-edits.test.mjs` | Per-activity additions/removals, blocking and change count |
-| `dialog.test.mjs` | Sections, chips, editor validation, address search and backup |
+| `dialog.test.mjs` | Sections, disclosure, name limits, dialog semantics, focus, validation and address search |
 | `storage.test.mjs` | Tampermonkey storage |
 | `overpass.test.mjs` | Mirrors, retry policy, transport and feature cache |
 | `page.test.mjs` | Injection, observers, stylesheet and activities without GPS |

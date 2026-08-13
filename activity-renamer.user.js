@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.3
+// @version      0.1.9
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -28,7 +28,8 @@
         overpassRetryBaseMs: 5000,
         overpassMirrorRetryMs: 1000,
         minAutoPlaces: 3,
-        maxAutoPlaces: 7,
+        defaultMaxNamePlaces: 7,
+        minNamePlaces: 2,
         autoPlaceSpacingKm: 4,
         savedPlaceRadiusM: 200,
         savedPlaceRadiusMinM: 10,
@@ -73,6 +74,7 @@
         savedPlaces: 'activity_renamer_saved_places_v1',
         blockedNames: 'activity_renamer_blocked_names_v1',
         rideNames: 'activity_renamer_ride_names_v1',
+        maxNamePlaces: 'activity_renamer_max_name_places_v1',
     };
     const settings = new Map();
     // One stylesheet instead of a style object per element. It is adopted
@@ -134,6 +136,7 @@
     background: rgba(0, 0, 0, 0.45);
 }
 .activity-renamer-overlay .activity-renamer-panel {
+    box-sizing: border-box;
     width: min(680px, 100%);
     max-height: 85vh;
     overflow-y: auto;
@@ -143,6 +146,7 @@
     border-radius: var(--border-radius-md);
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
 }
+.activity-renamer-overlay .activity-renamer-panel:focus { outline: none; }
 .activity-renamer-overlay .activity-renamer-header {
     display: flex;
     align-items: center;
@@ -152,10 +156,13 @@
 .activity-renamer-overlay .activity-renamer-header h3 { margin: 0; }
 .activity-renamer-overlay .activity-renamer-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
 .activity-renamer-overlay .activity-renamer-section-toggle {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
     width: 100%;
+    min-height: 44px;
     margin: var(--space-md) 0 var(--space-3xs);
-    padding: 0;
+    padding: var(--space-3xs) 0;
     color: var(--color-extendedneutraln1);
     background: none;
     border: none;
@@ -163,6 +170,17 @@
     font-weight: 600;
     text-align: left;
     cursor: pointer;
+}
+.activity-renamer-overlay .activity-renamer-section-toggle::before {
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    content: '';
+    transform: rotate(-45deg);
+}
+.activity-renamer-overlay .activity-renamer-section-toggle[aria-expanded="true"]::before {
+    transform: rotate(45deg);
 }
 .activity-renamer-overlay .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
@@ -196,8 +214,31 @@
 .activity-renamer-overlay .activity-renamer-field--narrow { flex: 0 0 130px; }
 .activity-renamer-overlay .activity-renamer-form {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2xs);
+}
+.activity-renamer-overlay .activity-renamer-name-limit {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin: var(--space-xs) 0 var(--space-sm);
+}
+.activity-renamer-overlay .activity-renamer-name-limit-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.activity-renamer-overlay .activity-renamer-name-limit label {
+    display: block;
+    font-weight: 600;
+}
+.activity-renamer-overlay .activity-renamer-name-limit .activity-renamer-note {
+    margin: var(--space-4xs) 0 0;
+}
+.activity-renamer-overlay .activity-renamer-name-limit input {
+    flex: 0 0 auto;
+    min-width: 72px;
+    width: 72px;
 }
 .activity-renamer-overlay .activity-renamer-status {
     min-height: 18px;
@@ -213,7 +254,7 @@
     padding: var(--space-2xs) 0;
     border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--color-extendedneutraln6);
 }
-.activity-renamer-overlay .activity-renamer-row-text { flex: 1 1 auto; }
+.activity-renamer-overlay .activity-renamer-row-text { flex: 1 1 auto; min-width: 0; }
 .activity-renamer-overlay .activity-renamer-row-title { font-weight: 600; }
 .activity-renamer-overlay .activity-renamer-row-details {
     margin-top: var(--space-4xs);
@@ -264,21 +305,44 @@
 .activity-renamer-overlay .activity-renamer-chip-drop:hover {
     background: var(--color-extendedredr3);
 }
-.activity-renamer-overlay .activity-renamer-backup {
-    width: 100%;
-    box-sizing: border-box;
-    padding: var(--space-2xs) var(--space-xs);
-    color: var(--color-extendedneutraln1);
-    background: var(--color-corewhite);
-    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
-    border-radius: var(--border-radius-sm);
-    font-family: monospace;
-    font-size: 12px;
-}
 .activity-renamer-overlay .activity-renamer-attribution {
     margin: var(--space-3xs) 0 var(--space-sm);
     color: var(--color-extendedneutraln4);
     font-size: 11px;
+}
+.activity-renamer-overlay .activity-renamer-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+.activity-renamer-overlay button:focus-visible,
+.activity-renamer-overlay input:focus-visible,
+.activity-renamer-overlay a:focus-visible {
+    outline: 2px solid var(--color-coreo3);
+    outline-offset: 2px;
+}
+@media (max-width: 600px) {
+    .activity-renamer-overlay { padding: var(--space-xs); }
+    .activity-renamer-overlay .activity-renamer-panel {
+        max-height: calc(100vh - (2 * var(--space-xs)));
+        padding: var(--space-sm);
+    }
+    .activity-renamer-overlay .activity-renamer-field--narrow { flex-basis: 100%; }
+    .activity-renamer-overlay .activity-renamer-row {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+    .activity-renamer-overlay .activity-renamer-row-actions {
+        margin-left: auto;
+        flex-wrap: wrap;
+    }
+    .activity-renamer-overlay .activity-renamer-name-limit { align-items: flex-start; }
 }
 `;
 
@@ -431,14 +495,37 @@
         });
     }
 
-    // A name typed into a field, pasted in a backup or read from OSM reaches
+    function minimumNamePlaces() {
+        return Math.max(1, Math.floor(CONFIG.minNamePlaces));
+    }
+
+    function loadMaxNamePlaces() {
+        const minimum = minimumNamePlaces();
+        const fallback = Math.max(minimum, Math.floor(CONFIG.defaultMaxNamePlaces));
+        const stored = Number(readSetting(STORAGE_KEY.maxNamePlaces));
+        return Number.isInteger(stored) && stored >= minimum
+            ? stored
+            : fallback;
+    }
+
+    function storeMaxNamePlaces(value) {
+        const minimum = minimumNamePlaces();
+        const normalized = Number(value);
+        if (!Number.isInteger(normalized) || normalized < minimum) {
+            throw new Error(`The maximum must be ${minimum} places or more.`);
+        }
+        writeSetting(STORAGE_KEY.maxNamePlaces, normalized);
+        return normalized;
+    }
+
+    // A name typed into a field, loaded from storage or read from OSM reaches
     // the same single-spaced shape.
     function collapseWhitespace(value) {
         return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
     }
 
-    // The single gate every saved place passes, whether it comes from the form, a
-    // pasted backup or the editor.
+    // The single gate every saved place passes, whether loaded from storage or
+    // changed in the editor.
     function isUsableRadius(radiusM) {
         return Number.isFinite(radiusM)
             && radiusM >= CONFIG.savedPlaceRadiusMinM
@@ -736,7 +823,6 @@
         'roadMatchRadiusM',
         'overpassMaxRoutePoints',
         'minAutoPlaces',
-        'maxAutoPlaces',
         'autoPlaceSpacingKm',
         'stripPlaceParentheticals',
     ];
@@ -1390,7 +1476,7 @@
 
     function automaticPlaceLimit(track) {
         const minimum = Math.max(1, Math.floor(CONFIG.minAutoPlaces));
-        const maximum = Math.max(minimum, Math.floor(CONFIG.maxAutoPlaces));
+        const maximum = Math.max(minimum, loadMaxNamePlaces());
         const spacingKm = Math.max(1, Number(CONFIG.autoPlaceSpacingKm));
         return Math.max(
             minimum,
@@ -1555,10 +1641,14 @@
                 count + Number(isForced(run) && !endpointIndices.has(index)),
             0,
         );
-        const automaticLimit = Math.max(
+        const availableAutomaticSlots = Math.max(
+            0,
+            loadMaxNamePlaces() - endpointIndices.size - interiorForcedCount,
+        );
+        const automaticLimit = Math.min(availableAutomaticSlots, Math.max(
             0,
             automaticPlaceLimit(track) - interiorForcedCount,
-        );
+        ));
         // What the automatic slots may still choose from: everything the name
         // does not already contain for another reason.
         const isCandidate = (run, index) => !endpointIndices.has(index) && !isForced(run);
@@ -1953,6 +2043,12 @@
         return createElement('input', 'activity-renamer-field', { type: 'text', ...properties });
     }
 
+    function createFieldLabel(inputId, text) {
+        const label = createElement('label', 'activity-renamer-sr-only', { textContent: text });
+        label.setAttribute('for', inputId);
+        return label;
+    }
+
     function createSectionTitle(text) {
         return createElement('h4', '', { textContent: text });
     }
@@ -1965,6 +2061,10 @@
     // guidance while it is empty, one row per entry once it is not.
     function appendListSection(panel, title, items, { empty, row }) {
         panel.append(createSectionTitle(`${title} (${items.length})`));
+        appendListContents(panel, items, { empty, row });
+    }
+
+    function appendListContents(panel, items, { empty, row }) {
         if (items.length === 0) {
             panel.append(createDialogNote(empty));
             return;
@@ -2003,6 +2103,7 @@
             placeholder: 'Name to use in the title',
             maxLength: CONFIG.maxPlaceNameLength,
         });
+        nameInput.setAttribute('aria-describedby', 'activity-renamer-place-status');
         nameInput.addEventListener('input', () => {
             state.editing.name = nameInput.value;
         });
@@ -2013,6 +2114,7 @@
             value: state.editing.radiusM,
             placeholder: `Radius ${CONFIG.savedPlaceRadiusMinM}–${CONFIG.savedPlaceRadiusMaxM} m`,
         });
+        radiusInput.setAttribute('aria-describedby', 'activity-renamer-place-status');
         radiusInput.addEventListener('input', () => {
             state.editing.radiusM = radiusInput.value;
         });
@@ -2025,7 +2127,14 @@
         });
 
         const form = createElement('form', 'activity-renamer-form');
-        form.append(nameInput, radiusInput, saveButton, cancelButton);
+        form.append(
+            createFieldLabel(nameInput.id, 'Place name'),
+            nameInput,
+            createFieldLabel(radiusInput.id, 'Matching radius in metres'),
+            radiusInput,
+            saveButton,
+            cancelButton,
+        );
         saveButton.type = 'submit';
         form.addEventListener('submit', event => {
             event.preventDefault();
@@ -2040,7 +2149,7 @@
                 render();
             } catch (error) {
                 state.editing.error = errorMessage(error);
-                render();
+                render('activity-renamer-place-name-input');
             }
         });
 
@@ -2050,6 +2159,7 @@
                     target?.address || target?.baseName || 'this place'}.`,
             Boolean(state.editing.error),
         );
+        status.id = 'activity-renamer-place-status';
 
         section.append(title, form, status);
         panel.append(section);
@@ -2112,6 +2222,7 @@
             autocomplete: 'street-address',
             maxLength: 200,
         });
+        input.setAttribute('aria-describedby', 'activity-renamer-address-status');
         input.addEventListener('input', () => {
             state.search.query = input.value;
         });
@@ -2120,9 +2231,10 @@
         searchButton.type = 'submit';
         searchButton.disabled = state.search.busy;
         input.disabled = state.search.busy;
-        form.append(input, searchButton);
+        form.append(createFieldLabel(input.id, 'Address'), input, searchButton);
 
         const status = createStatusLine(state.search.status, state.search.error);
+        status.id = 'activity-renamer-address-status';
         const results = document.createElement('div');
         for (const candidate of state.search.candidates) {
             const addButton = createDialogButton('☆ Save', true);
@@ -2149,116 +2261,129 @@
         panel.append(note, form, status, results, attribution);
     }
 
-    // Names kept for a single ride are left out: they are a note about one
-    // activity, not a saved place worth carrying to another browser.
-    function backupPayload() {
-        return {
-            savedPlaces: loadSavedPlaces(),
-            blockedNames: loadBlockedNames(),
-        };
-    }
-
-    function applyBackup(text) {
-        let parsed;
-        try {
-            parsed = JSON.parse(text);
-        } catch {
-            throw new Error('That is not valid JSON.');
-        }
-        const savedPlaces = parsed?.savedPlaces;
-        if (!Array.isArray(savedPlaces)) {
-            throw new Error('A backup must contain a "savedPlaces" array.');
-        }
-        const normalized = savedPlaces.map(normalizeSavedPlace).filter(Boolean);
-        if (savedPlaces.length > 0 && normalized.length === 0) {
-            throw new Error('No usable saved place in that backup.');
-        }
-        storeSavedPlaces(normalized);
-        const blocked = saveNameList(STORAGE_KEY.blockedNames, parsed?.blockedNames);
-        refreshActivityName();
-        return {
-            savedPlaces: normalized.length,
-            blockedNames: blocked.length,
-        };
-    }
-
-    // Plain text rather than a file download: it survives a copy into any note
-    // app and needs no extra permission.
-    function appendBackupSection(panel, state, render) {
-        const title = createSectionTitle('Backup');
-
-        const note = createDialogNote('Copy this somewhere safe, or paste a backup and import it.');
-
-        const textarea = createElement('textarea', 'activity-renamer-backup', {
-            id: 'activity-renamer-backup-input',
-            rows: 5,
-            spellcheck: false,
-            value: state.backup.text ?? JSON.stringify(backupPayload(), null, 2),
-        });
-        textarea.addEventListener('input', () => {
-            state.backup.text = textarea.value;
-        });
-
-        const status = createStatusLine(state.backup.status);
-        const copyButton = createDialogButton('Copy');
-        copyButton.addEventListener('click', () => {
-            navigator.clipboard?.writeText(textarea.value);
-            textarea.focus();
-            status.textContent = 'Copied to the clipboard.';
-        });
-
-        // Importing replaces everything, so the button asks once before it does.
-        const importButton = createDialogButton(
-            state.backup.armed ? 'Replace everything' : 'Import', true);
-        importButton.addEventListener('click', () => runDialogAction(() => {
-            if (!state.backup.armed) {
-                state.backup.armed = true;
-                state.backup.text = textarea.value;
-                state.backup.status = 'This overwrites the saved places. Click again to confirm.';
-                render();
-                return;
-            }
-            const imported = applyBackup(textarea.value);
-            log(`Imported ${imported.savedPlaces} saved places`
-                + ` and ${imported.blockedNames} blocked names`);
-            state.backup = { text: null, armed: false, status: 'Backup imported.' };
+    function appendDisclosure(panel, state, render, {
+        id, label, count, stateKey, appendContents,
+    }) {
+        const toggle = createDialogButton(`${label} (${count})`);
+        toggle.id = `activity-renamer-${id}-toggle`;
+        toggle.className = 'activity-renamer-section-toggle';
+        toggle.setAttribute('aria-expanded', String(state[stateKey]));
+        toggle.setAttribute('aria-controls', `activity-renamer-${id}`);
+        toggle.addEventListener('click', () => {
+            state[stateKey] = !state[stateKey];
             render();
-        }));
+        });
+        panel.append(toggle);
+        if (!state[stateKey]) return;
 
-        const controls = createElement('div', 'activity-renamer-row-actions');
-        controls.append(copyButton, importButton);
-
-        panel.append(title, note, textarea, controls, status);
+        const container = createElement('div', '', { id: `activity-renamer-${id}` });
+        appendContents(container, state, render);
+        panel.append(container);
     }
 
-    // The dialog is about one thing — the sentence in the title field — so that
-    // is what it opens with, editable part by part, followed by the places the
-    // ride passed that are not in it. Everything below is a setting behind that
-    // name: what a place is called everywhere, what is never named at all, and
-    // the backup nobody opens twice.
+    function appendFavorites(panel, state, render) {
+        appendDisclosure(panel, state, render, {
+            id: 'favorites',
+            label: 'Favorites',
+            count: loadSavedPlaces().length,
+            stateKey: 'favoritesOpen',
+            appendContents: appendFavoriteContents,
+        });
+    }
+
+    function appendNeverInName(panel, state, render) {
+        appendDisclosure(panel, state, render, {
+            id: 'never',
+            label: 'Never in a name',
+            count: loadBlockedNames().length,
+            stateKey: 'neverOpen',
+            appendContents: appendBlockedNameContents,
+        });
+    }
+
+    // The dialog opens on the route name and the landmarks that can join it.
+    // Favorites and global exclusions remain separate and collapsed until used.
     const DIALOG_SECTIONS = [
         appendThisName,
+        appendNamePlaceLimit,
         appendAlsoPassed,
         appendRoads,
-        appendSavedPlaces,
-        appendBlockedNames,
-        appendBackupSection,
+        appendFavorites,
+        appendNeverInName,
     ];
+
+    function dialogFocusableElements(panel) {
+        return Array.from(panel.querySelectorAll('button, input, textarea, select, a'))
+            .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
+    }
+
+    function captureDialogFocus(panel) {
+        const element = document.activeElement;
+        if (!element || !panel.contains(element)) return null;
+        return {
+            id: element.id,
+            tagName: element.tagName,
+            text: element.textContent,
+            title: element.title || '',
+        };
+    }
+
+    function restoreDialogFocus(panel, snapshot, preferredId) {
+        let target = preferredId ? panel.querySelector(`#${preferredId}`) : null;
+        if (!target && snapshot?.id) target = panel.querySelector(`#${snapshot.id}`);
+        if (!target && snapshot) {
+            target = dialogFocusableElements(panel).find(element =>
+                element.tagName === snapshot.tagName
+                && element.textContent === snapshot.text
+                && (element.title || '') === snapshot.title);
+        }
+        if (target?.disabled) target = null;
+        (target || panel).focus();
+    }
 
     function openNameDialog() {
         document.getElementById(NAME_DIALOG_ID)?.remove();
+        const returnFocus = document.getElementById(EDIT_NAME_BUTTON_ID);
 
         const overlay = createElement('div', 'activity-renamer-overlay', {
             id: NAME_DIALOG_ID,
         });
-        const panel = createElement('div', 'activity-renamer-panel');
+        const panel = createElement('div', 'activity-renamer-panel', { tabIndex: -1 });
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-modal', 'true');
+        panel.setAttribute('aria-labelledby', 'activity-renamer-dialog-title');
 
         const close = () => {
             document.removeEventListener('keydown', onKeyDown);
             overlay.remove();
+            returnFocus?.focus();
         };
         const onKeyDown = event => {
-            if (event.key === 'Escape') close();
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                close();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const focusable = dialogFocusableElements(panel);
+            if (focusable.length === 0) {
+                event.preventDefault();
+                panel.focus();
+                return;
+            }
+
+            const currentIndex = focusable.indexOf(document.activeElement);
+            if (currentIndex < 0) {
+                event.preventDefault();
+                (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
+            } else if (event.shiftKey && currentIndex === 0) {
+                event.preventDefault();
+                focusable.at(-1).focus();
+            } else if (!event.shiftKey && currentIndex === focusable.length - 1) {
+                event.preventDefault();
+                focusable[0].focus();
+            }
         };
         document.addEventListener('keydown', onKeyDown);
         overlay.addEventListener('click', event => {
@@ -2272,29 +2397,38 @@
             editing: null,
             confirmingDeleteId: null,
             roadsOpen: false,
+            favoritesOpen: false,
+            neverOpen: false,
+            limitError: '',
             search: { query: '', candidates: [], status: '', error: false, busy: false },
-            backup: { text: null, armed: false, status: '' },
         };
         // The route is read once per render and shared: two sections describe
         // the same name from opposite sides.
-        const render = () => {
+        const render = (preferredFocusId = null) => {
+            const focusSnapshot = captureDialogFocus(panel);
             state.view = currentRouteView();
             panel.replaceChildren();
             appendDialogHeader(panel, close);
             for (const section of DIALOG_SECTIONS) section(panel, state, render);
+            if (overlay.parentNode) restoreDialogFocus(panel, focusSnapshot, preferredFocusId);
         };
         render();
 
         overlay.append(panel);
         document.body.append(overlay);
+        panel.focus();
     }
 
     function appendDialogHeader(panel, close) {
         const header = createElement('div', 'activity-renamer-header');
         const closeButton = createDialogButton('Close');
         closeButton.addEventListener('click', close);
+        const title = createElement('h3', '', {
+            id: 'activity-renamer-dialog-title',
+            textContent: 'Edit activity name',
+        });
         header.append(
-            createElement('h3', '', { textContent: 'Activity Renamer' }),
+            title,
             closeButton,
         );
         panel.append(header);
@@ -2330,7 +2464,7 @@
             error: '',
         };
         state.confirmingDeleteId = null;
-        render();
+        render('activity-renamer-place-name-input');
     }
 
     function appendEditorAt(container, state, render, anchor) {
@@ -2360,6 +2494,48 @@
         }
 
         appendEditorAt(panel, state, render, NAME_ANCHOR);
+    }
+
+    function appendNamePlaceLimit(panel, state, render) {
+        const inputId = 'activity-renamer-max-name-places';
+        const noteId = 'activity-renamer-max-name-places-note';
+        const section = createElement('div', 'activity-renamer-name-limit');
+        const copy = createElement('div', 'activity-renamer-name-limit-copy');
+        const label = createElement('label', '', { textContent: 'Maximum places' });
+        label.setAttribute('for', inputId);
+        const note = createDialogNote(state.limitError
+            || 'Start, finish, Favorites and manual additions are always kept.');
+        if (state.limitError) {
+            note.className = 'activity-renamer-note activity-renamer-status--error';
+        }
+        note.id = noteId;
+        copy.append(label, note);
+
+        const minimum = minimumNamePlaces();
+        const input = createDialogInput({
+            id: inputId,
+            type: 'number',
+            min: String(minimum),
+            step: '1',
+            inputMode: 'numeric',
+            value: String(loadMaxNamePlaces()),
+        });
+        input.setAttribute('aria-describedby', noteId);
+        input.addEventListener('change', () => {
+            const value = Number(input.value);
+            if (!Number.isInteger(value) || value < minimum) {
+                state.limitError = `Enter a whole number of ${minimum} or more.`;
+                render(inputId);
+                return;
+            }
+            storeMaxNamePlaces(value);
+            state.limitError = '';
+            refreshActivityName();
+            render(inputId);
+        });
+
+        section.append(copy, input);
+        panel.append(section);
     }
 
     function createNameChip(name, view, state, render) {
@@ -2443,7 +2619,8 @@
         const inName = new Set(view.names);
         const roads = uniqueLandmarksByName(view.landmarks.filter(landmark =>
             landmark.passage.featureKind === 'road' && !inName.has(landmark.name)));
-        const toggle = createDialogButton(`${state.roadsOpen ? '▾' : '▸'} Roads (${roads.length})`);
+        const toggle = createDialogButton(`Roads (${roads.length})`);
+        toggle.id = 'activity-renamer-roads-toggle';
         toggle.className = 'activity-renamer-section-toggle';
         toggle.setAttribute('aria-expanded', String(state.roadsOpen));
         toggle.setAttribute('aria-controls', 'activity-renamer-roads');
@@ -2513,11 +2690,10 @@
         appendDialogRow(panel, name, details, [addButton, renameButton, blockButton]);
     }
 
-    // A saved name replaces the OSM one on every ride that comes near it, so
-    // this is the list of the places the rider has words of their own for.
-    function appendSavedPlaces(panel, state, render) {
-        appendListSection(panel, 'Saved places', loadSavedPlaces(), {
-            empty: 'No saved names yet. Rename a place above, or add one by address.',
+    // A favorite replaces the OSM name on every ride that comes near it.
+    function appendFavoriteContents(panel, state, render) {
+        appendListContents(panel, loadSavedPlaces(), {
+            empty: 'No favorites yet. Rename a place above, or add one by address.',
             row: savedPlace => {
                 const editButton = createDialogButton('Edit');
                 editButton.addEventListener('click', () =>
@@ -2549,8 +2725,8 @@
         appendAddressSearch(panel, state, render);
     }
 
-    function appendBlockedNames(panel, state, render) {
-        appendListSection(panel, 'Never in a name', loadBlockedNames(), {
+    function appendBlockedNameContents(panel, state, render) {
+        appendListContents(panel, loadBlockedNames(), {
             empty: 'Nothing is blocked. “Never” on a landmark silences a name for good.',
             row: name => {
                 const removeButton = createDialogButton('Unblock');
