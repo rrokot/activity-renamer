@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.13
+// @version      0.1.14
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -680,6 +680,10 @@
         return names;
     }
 
+    function normalizeNameSequence(values) {
+        return (Array.isArray(values) ? values : []).map(normalizeListedName).filter(Boolean);
+    }
+
     function loadNameList(key) {
         return normalizeListedNames(readSetting(key));
     }
@@ -700,11 +704,10 @@
         return keys.has(String(name).toLocaleLowerCase());
     }
 
-    // Three overrides belong to the ride in front of the user and to no other:
-    // a place this name must contain, a place it is better off without, and the
-    // desired number of places. The store keeps one entry per activity, and
-    // only for rides whose generated names were adjusted by hand.
-    const NO_RIDE_OVERRIDE = { kept: [], dropped: [], placeCount: null };
+    // Two overrides belong to the ride in front of the user and to no other:
+    // places this name must contain and the desired number of places. The store
+    // keeps one entry per activity, only after its generated name is edited.
+    const NO_RIDE_OVERRIDE = { kept: [], placeCount: null };
 
     function loadRideOverrideEntries() {
         const stored = readSetting(STORAGE_KEY.rideOverrides);
@@ -712,14 +715,11 @@
         return stored
             .map(entry => ({
                 activityId: String(entry?.activityId ?? ''),
-                kept: normalizeListedNames(entry?.kept),
-                dropped: normalizeListedNames(entry?.dropped),
+                kept: normalizeNameSequence(entry?.kept),
                 placeCount: normalizeNamePlaceCount(entry?.placeCount),
             }))
             .filter(entry =>
-                entry.activityId && (entry.kept.length > 0
-                    || entry.dropped.length > 0
-                    || entry.placeCount !== null));
+                entry.activityId && (entry.kept.length > 0 || entry.placeCount !== null));
     }
 
     function loadRideOverride(activityId = getActivityId()) {
@@ -727,15 +727,14 @@
         const entry = loadRideOverrideEntries().find(item => item.activityId === activityId);
         return entry ? {
             kept: entry.kept,
-            dropped: entry.dropped,
             placeCount: entry.placeCount,
         } : NO_RIDE_OVERRIDE;
     }
 
-    function saveRideOverride(activityId, { kept, dropped, placeCount = null }) {
+    function saveRideOverride(activityId, { kept, placeCount = null }) {
         const entries = loadRideOverrideEntries().filter(entry => entry.activityId !== activityId);
-        if (kept.length > 0 || dropped.length > 0 || placeCount !== null) {
-            const entry = { activityId, kept, dropped };
+        if (kept.length > 0 || placeCount !== null) {
+            const entry = { activityId, kept };
             if (placeCount !== null) entry.placeCount = placeCount;
             entries.push(entry);
         }
@@ -760,67 +759,53 @@
         return true;
     }
 
-    // Adding a place to this name and taking it out are opposite answers to one
-    // question, so setting either clears the other.
-    function toggleRideName(list, name) {
-        const activityId = getActivityId();
-        const normalized = normalizeListedName(name);
-        if (!activityId || !normalized) return false;
-        const other = list === 'kept' ? 'dropped' : 'kept';
-        const current = loadRideOverride(activityId);
-        saveRideOverride(activityId, {
-            [list]: withNameToggled(current[list], normalized),
-            [other]: withoutName(current[other], normalized),
-            placeCount: current.placeCount,
+    function insertNameInRouteOrder(names, name, passage) {
+        const landmarks = currentRouteView()?.landmarks || [];
+        const targetOrder = passage?.anchor;
+        if (!Number.isFinite(targetOrder) || landmarks.length === 0) return names.concat(name);
+
+        let landmarkIndex = 0;
+        const orders = names.map(existingName => {
+            while (landmarkIndex < landmarks.length
+                && String(landmarks[landmarkIndex].name).toLocaleLowerCase()
+                    !== existingName.toLocaleLowerCase()) {
+                landmarkIndex++;
+            }
+            if (landmarkIndex >= landmarks.length) return Infinity;
+            return landmarks[landmarkIndex++].passage.anchor;
         });
-        refreshActivityName();
-        return true;
+        const insertAt = orders.findIndex(order => order > targetOrder);
+        const result = names.slice();
+        result.splice(insertAt < 0 ? result.length : insertAt, 0, name);
+        return result;
     }
 
-    function keepInThisName(name) {
+    function keepInThisName(name, passage) {
         const activityId = getActivityId();
         const normalized = normalizeListedName(name);
         if (!activityId || !normalized) return false;
         const current = loadRideOverride(activityId);
-        const wasDropped = hasNameKey(normalized, nameKeys(current.dropped));
-        const isBlocked = hasNameKey(normalized, nameKeys(loadBlockedNames()));
-        if (!wasDropped || isBlocked) return toggleRideName('kept', normalized);
-
-        // Adding back a place removed with ✕ is an undo, not a new forced
-        // addition. Restore the slot and let the automatic selector own it
-        // again, so the next ✕ can remove it normally.
-        saveRideOverride(activityId, {
-            kept: current.kept,
-            dropped: withoutName(current.dropped, normalized),
-            placeCount: current.placeCount === null ? null : current.placeCount + 1,
-        });
-        refreshActivityName();
-        return true;
-    }
-
-    // Taking a place out of the name undoes whatever put it there: a place the
-    // rider added is simply un-added, which restores the name they had before
-    // the click. Only a place the automatic choice picked has to be recorded as
-    // removed. Its slot is removed as well, or the next candidate would take it.
-    function dropFromThisName(name) {
-        const activityId = getActivityId();
-        const normalized = normalizeListedName(name);
-        if (!activityId || !normalized) return false;
-        const current = loadRideOverride(activityId);
-        if (hasNameKey(normalized, nameKeys(current.kept))) {
-            return toggleRideName('kept', normalized);
-        }
-
         const names = currentActivityNames() || [];
-        const removedOccurrences = Math.max(
-            1,
-            names.filter(entry => entry.toLocaleLowerCase() === normalized.toLocaleLowerCase())
-                .length,
-        );
         saveRideOverride(activityId, {
-            kept: current.kept,
-            dropped: withNameToggled(current.dropped, normalized),
-            placeCount: Math.max(minimumNamePlaces(), names.length - removedOccurrences),
+            kept: insertNameInRouteOrder(names, normalized, passage),
+            placeCount: Math.max(current.placeCount ?? 0, names.length) + 1,
+        });
+        refreshActivityName();
+        return true;
+    }
+
+    // Removing a chip stores the resulting name, not a ban on the clicked
+    // place. Every remaining chip stays stable while the count goes down.
+    function dropFromThisName(name, index) {
+        const activityId = getActivityId();
+        const normalized = normalizeListedName(name);
+        if (!activityId || !normalized) return false;
+        const names = currentActivityNames() || [];
+        if (index < 0 || index >= names.length) return false;
+        const remaining = names.filter((_, nameIndex) => nameIndex !== index);
+        saveRideOverride(activityId, {
+            kept: normalizeNameSequence(remaining),
+            placeCount: Math.max(minimumNamePlaces(), remaining.length),
         });
         refreshActivityName();
         return true;
@@ -1850,27 +1835,25 @@
     // user has not blocked, plus the Favorites the passages never covered.
     // `suppressed` collects what the block list took out, for the log.
     function routeEvents(passages, track, preferences, shouldLog) {
-        const { favorites, blockedNames, kept: keptNames, dropped } = preferences;
+        const { favorites, blockedNames, kept: keptNames } = preferences;
         const visits = favoriteVisits(track, favorites);
         const blockedKeys = nameKeys(blockedNames);
         const keptKeys = nameKeys(keptNames);
-        const droppedKeys = nameKeys(dropped);
         const coveredVisits = new Set();
-        const suppressed = { dropped: new Set(), blocked: new Set() };
+        const suppressed = { blocked: new Set() };
         const events = [];
         // What this ride says wins over what the block list says about every
         // ride: the narrower answer is the one the user gave last.
         const nameState = name => {
-            if (hasNameKey(name, droppedKeys)) return { kept: false, hidden: 'dropped' };
-            if (hasNameKey(name, keptKeys)) return { kept: true, hidden: null };
-            return { kept: false, hidden: hasNameKey(name, blockedKeys) ? 'blocked' : null };
+            if (hasNameKey(name, keptKeys)) return null;
+            return hasNameKey(name, blockedKeys) ? 'blocked' : null;
         };
 
         for (const passage of passages) {
             const match = closestFavoriteForPassage(passage, track, favorites);
             const name = match?.favorite.name || passage.baseName;
             if (!name) continue;
-            const { kept, hidden } = nameState(name);
+            const hidden = nameState(name);
             if (hidden) {
                 suppressed[hidden].add(name);
                 continue;
@@ -1900,13 +1883,13 @@
                 lon: match?.favorite.lon ?? passage.lon,
                 featureKind: match ? 'favorite' : passage.featureKind,
                 roadType: passage.roadType || null,
-                kept,
+                kept: false,
             });
         }
 
         for (const visit of visits) {
             if (coveredVisits.has(visit)) continue;
-            const { kept, hidden } = nameState(visit.favorite.name);
+            const hidden = nameState(visit.favorite.name);
             if (hidden) {
                 suppressed[hidden].add(visit.favorite.name);
                 continue;
@@ -1926,11 +1909,19 @@
                 lon: visit.favorite.lon,
                 featureKind: 'favorite',
                 roadType: null,
-                kept,
+                kept: false,
             });
         }
 
         events.sort((a, b) => a.orderIndex - b.orderIndex);
+        let keptIndex = 0;
+        for (const event of events) {
+            if (keptIndex < keptNames.length
+                && event.name.toLocaleLowerCase() === keptNames[keptIndex].toLocaleLowerCase()) {
+                event.kept = true;
+                keptIndex++;
+            }
+        }
         return { events, suppressed };
     }
 
@@ -1973,9 +1964,6 @@
             + (kept ? ` (${kept} kept for this ride)` : ''));
         if (suppressed.blocked.size > 0) {
             log(`Blocked from the name: ${Array.from(suppressed.blocked).join(', ')}`);
-        }
-        if (suppressed.dropped.size > 0) {
-            log(`Removed from this ride: ${Array.from(suppressed.dropped).join(', ')}`);
         }
         if (compacted.length < runs.length) {
             log(`Name compacted from ${runs.length} to ${compacted.length} places: `
@@ -2500,7 +2488,11 @@
         const container = createElement('div', '', { id: `activity-renamer-${id}` });
         container.setAttribute('role', 'tabpanel');
         container.setAttribute('aria-labelledby', tab.id);
-        appendContents(container, state, render);
+        state.refreshCollection = () => {
+            container.replaceChildren();
+            appendContents(container, state, render);
+        };
+        state.refreshCollection();
         panel.append(container);
     }
 
@@ -2574,6 +2566,7 @@
             editing: null,
             confirmingDeleteId: null,
             activeCollection: 'places',
+            refreshCollection: null,
             countError: '',
             search: { query: '', candidates: [], status: '', error: false, busy: false },
         };
@@ -2615,6 +2608,7 @@
 
         const focusSnapshot = capturePanelFocus(panel);
         state.view = currentRouteView();
+        state.refreshCollection = null;
         panel.replaceChildren();
         for (const section of PANEL_SECTIONS) section(panel, state, renderNamePanel);
         panel.setAttribute('aria-busy', String(nameBuildBusy));
@@ -2694,8 +2688,9 @@
                 const currentView = currentRouteView();
                 if (!currentView) return;
                 state.view = currentView;
-                chips.replaceChildren(...currentView.names.map(name =>
-                    createNameChip(name, currentView, state, render)));
+                chips.replaceChildren(...currentView.names.map((name, index, names) =>
+                    createNameChip(name, index, names.length, currentView, state, render)));
+                state.refreshCollection?.();
             };
             updateChips();
             appendNamePlaceCount(panel, state, render, updateChips);
@@ -2805,7 +2800,7 @@
         panel.append(section);
     }
 
-    function createNameChip(name, view, state, render) {
+    function createNameChip(name, index, nameCount, view, state, render) {
         const chip = createElement('div', 'activity-renamer-chip');
         const landmark = view.byName.get(name);
         // A Favorite can reach the name through a full-track visit that no
@@ -2833,8 +2828,12 @@
             textContent: '✕',
             title: `Take ${name} out of this ride’s name`,
         });
+        if (nameCount <= minimumNamePlaces()) {
+            dropButton.disabled = true;
+            dropButton.title = `A name needs at least ${minimumNamePlaces()} places`;
+        }
         dropButton.addEventListener('click', () => runPanelAction(() => {
-            dropFromThisName(name);
+            dropFromThisName(name, index);
             render();
         }));
 
@@ -2843,30 +2842,33 @@
     }
 
     // Settlements the route came near but the name does not mention: those the
-    // automatic selection had no slot for, those taken out by hand, and those
-    // the block list silences everywhere.
-    function appendOtherPlaces(panel, state, render, tablist) {
+    // automatic selection had no slot for and those the block list silences
+    // everywhere.
+    function appendOtherPlaceContents(panel, state, render) {
         const view = state.view;
         const inName = new Set(view?.names || []);
-        const dropped = nameKeys(loadRideOverride().dropped);
         const blocked = nameKeys(loadBlockedNames());
         const places = (view?.landmarks || []).filter(landmark =>
             landmark.passage.featureKind !== 'road'
             && landmark.name
             && !inName.has(landmark.name));
+        appendListContents(panel, places, {
+            empty: view
+                ? 'Every settlement of this route is in the name.'
+                : 'Build the name to load nearby places.',
+            row: landmark => {
+                appendLandmarkRow(panel, landmark, blocked, state, render);
+                appendEditorAt(panel, state, render, landmark.passage);
+            },
+        });
+    }
+
+    function appendOtherPlaces(panel, state, render, tablist) {
         appendCollectionTab(panel, state, render, tablist, {
             id: 'places',
             label: 'Other places',
             icon: 'places',
-            appendContents: container => appendListContents(container, places, {
-                empty: view
-                    ? 'Every settlement of this route is in the name.'
-                    : 'Build the name to load nearby places.',
-                row: landmark => {
-                    appendLandmarkRow(container, landmark, { dropped, blocked }, state, render);
-                    appendEditorAt(container, state, render, landmark.passage);
-                },
-            }),
+            appendContents: appendOtherPlaceContents,
         });
     }
 
@@ -2880,33 +2882,34 @@
         return Array.from(byName.values());
     }
 
-    function appendOtherRoads(panel, state, render, tablist) {
+    function appendOtherRoadContents(panel, state, render) {
         const view = state.view;
         const inName = new Set(view?.names || []);
         const roads = uniqueLandmarksByName((view?.landmarks || []).filter(landmark =>
             landmark.passage.featureKind === 'road' && !inName.has(landmark.name)));
+        if (roads.length === 0) {
+            panel.append(createPanelNote(view
+                ? 'No other named roads were passed.'
+                : 'Build the name to load nearby roads.'));
+            return;
+        }
+        const blocked = nameKeys(loadBlockedNames());
+        for (const road of roads) {
+            appendLandmarkRow(panel, road, blocked, state, render);
+            appendEditorAt(panel, state, render, road.passage);
+        }
+    }
+
+    function appendOtherRoads(panel, state, render, tablist) {
         appendCollectionTab(panel, state, render, tablist, {
             id: 'roads',
             label: 'Other roads',
             icon: 'roads',
-            appendContents: container => {
-                if (roads.length === 0) {
-                    container.append(createPanelNote(view
-                        ? 'No other named roads were passed.'
-                        : 'Build the name to load nearby roads.'));
-                    return;
-                }
-                const dropped = nameKeys(loadRideOverride().dropped);
-                const blocked = nameKeys(loadBlockedNames());
-                for (const road of roads) {
-                    appendLandmarkRow(container, road, { dropped, blocked }, state, render);
-                    appendEditorAt(container, state, render, road.passage);
-                }
-            },
+            appendContents: appendOtherRoadContents,
         });
     }
 
-    function appendLandmarkRow(panel, landmark, keys, state, render) {
+    function appendLandmarkRow(panel, landmark, blockedNames, state, render) {
         const { passage, match, name } = landmark;
 
         const addButton = createIconPanelButton(
@@ -2915,7 +2918,7 @@
             true,
         );
         addButton.addEventListener('click', () => runPanelAction(() => {
-            keepInThisName(name);
+            keepInThisName(name, passage);
             render();
         }));
 
@@ -2929,7 +2932,7 @@
             anchor: passage,
         }));
 
-        const isBlocked = hasNameKey(name, keys.blocked);
+        const isBlocked = hasNameKey(name, blockedNames);
         const blockLabel = isBlocked
             ? `Allow ${name} in generated names again`
             : `Exclude ${name} from every activity name`;
@@ -2940,11 +2943,7 @@
             render();
         }));
 
-        // Why it is not in the name comes first; a place that simply lost the
-        // slot says nothing and goes straight to where it was passed.
-        const reason = hasNameKey(name, keys.dropped) ? 'Removed from this ride'
-            : isBlocked ? 'Excluded'
-                : null;
+        const reason = isBlocked ? 'Excluded' : null;
         const sourceDetails = name === passage.baseName
             ? passage.featureKind === 'road' ? passage.roadType : passage.placeType
             : passage.address;

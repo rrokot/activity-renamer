@@ -51,7 +51,7 @@ test('reuses the feature cache after the ride place-count override changes', asy
     const first = loadScenario('dense-settlements', {
         userscriptStorage: {
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
-                activityId: '19000955532', kept: [], dropped: [], placeCount: 3,
+                activityId: '19000955532', kept: [], placeCount: 3,
             }]),
         },
     });
@@ -63,7 +63,7 @@ test('reuses the feature cache after the ride place-count override changes', asy
         storage: { [cacheKey]: cached },
         userscriptStorage: {
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
-                activityId: '19000955532', kept: [], dropped: [], placeCount: 12,
+                activityId: '19000955532', kept: [], placeCount: 12,
             }]),
         },
     });

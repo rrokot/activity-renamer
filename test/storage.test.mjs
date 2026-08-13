@@ -33,7 +33,6 @@ test('reads the place-count override for this activity from userscript storage',
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532',
                 kept: [],
-                dropped: [],
                 placeCount: 2,
             }]),
         },

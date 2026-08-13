@@ -44,9 +44,7 @@ test('a blocked start reads as the next real place', async () => {
     assert.doesNotMatch(name, /Cottbus/);
 });
 
-// Never naming a ride after a place is the escalation of taking it out of this
-// one: the ✕ drops it, and the row it lands in offers to silence it for good.
-test('dropping a name then blocking it keeps the title rewritten', async () => {
+test('removing a chip does not exclude its place', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const { renamer } = loadScenario('loop-with-revisit');
 
@@ -58,10 +56,26 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
     assert.ok(!chipNames(renamer).includes('Guhrow'), 'the chip is gone from the name');
     assert.deepEqual(
         JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)),
-        [{ activityId: fixture.activityId, kept: [], dropped: ['Guhrow'], placeCount: 6 }],
-        'the removal belongs to this ride alone',
+        [{
+            activityId: fixture.activityId,
+            kept: ['Cottbus', 'Sielow', 'Burg', 'Dissen', 'Sielow', 'Cottbus'],
+            placeCount: 6,
+        }],
+        'the remaining name is stored without a banned-place list',
+    );
+    const exclude = passedRowButton(renamer, 'Exclude', 'Guhrow');
+    assert.equal(exclude.getAttribute('aria-pressed'), 'false');
+    assert.equal(
+        exclude.parentNode.parentNode.children[0].children[1].textContent.includes('Excluded'),
+        false,
     );
 
+    passedRowButton(renamer, 'Add', 'Guhrow').click();
+
+    assert.equal(renamer.name, fixture.expected, 'the removed place remains available');
+    assert.equal(renamer.userscriptStore.has(BLOCKED_KEY), false);
+
+    nameChip(renamer, 'Guhrow').drop.click();
     passedRowButton(renamer, 'Exclude', 'Guhrow').click();
 
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)), ['Guhrow']);
@@ -73,6 +87,19 @@ test('dropping a name then blocking it keeps the title rewritten', async () => {
     passedRowButton(renamer, 'Add', 'Guhrow').click();
 
     assert.equal(renamer.name, fixture.expected);
+});
+
+test('removing a repeated chip removes the clicked occurrence', async () => {
+    const { renamer } = loadScenario('loop-with-revisit');
+    await renamer.generate();
+    openPanel(renamer);
+    const sielowChips = renamer.panel.querySelectorAll('button')
+        .filter(button => button.className === 'activity-renamer-chip-name'
+            && button.textContent === 'Sielow');
+
+    sielowChips[0].parentNode.children[1].click();
+
+    assert.equal(renamer.name, 'Cottbus - Guhrow - Burg - Dissen - Sielow - Cottbus');
 });
 
 test('dropping an automatic place removes its slot instead of choosing a replacement', async () => {
@@ -89,10 +116,14 @@ test('dropping an automatic place removes its slot instead of choosing a replace
     assert.equal(panelField(renamer, 'activity-renamer-name-place-count').value, '6');
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), [{
         activityId: fixture.activityId,
-        kept: [],
-        dropped: ['Schmogrow'],
+        kept: ['Cottbus', 'Sielow', 'Burg', 'Briesen', 'Kolkwitz', 'Cottbus'],
         placeCount: 6,
     }]);
+
+    passedRowButton(renamer, 'Add', 'Werben').click();
+
+    assert.match(renamer.name, /Werben/, 'the village whose Add button was clicked is added');
+    assert.doesNotMatch(renamer.name, /Schmogrow/, 'the removed village is not substituted');
 });
 
 // Werben loses the automatic selection to places that spread wider over the
@@ -105,20 +136,60 @@ test('an added place survives the slots running out', async () => {
     assert.doesNotMatch(renamer.name, /Werben/);
 
     openPanel(renamer);
+    const countBeforeAddition = renamer.name.split(' - ').length;
     passedRowButton(renamer, 'Add', 'Werben').click();
 
     assert.match(renamer.name, /Werben/);
+    assert.equal(renamer.name.split(' - ').length, countBeforeAddition + 1,
+        'Add increases the number of places instead of replacing one');
     assert.deepEqual(
         JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)),
-        [{ activityId: fixture.activityId, kept: ['Werben'], dropped: [] }],
+        [{
+            activityId: fixture.activityId,
+            kept: [
+                'Cottbus', 'Sielow', 'Werben', 'Schmogrow',
+                'Burg', 'Briesen', 'Kolkwitz', 'Cottbus',
+            ],
+            placeCount: 8,
+        }],
     );
 
-    // Taking it out again undoes the addition rather than recording a removal,
-    // so the ride is left exactly as it was found.
+    const beforeRemoval = renamer.name.split(' - ');
     nameChip(renamer, 'Werben').drop.click();
 
-    assert.equal(renamer.name, fixture.expected);
-    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), []);
+    assert.equal(renamer.name.split(' - ').length, beforeRemoval.length - 1);
+    assert.doesNotMatch(renamer.name, /Werben/);
+    assert.equal(
+        JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY))[0].dropped,
+        undefined,
+    );
+});
+
+test('adding a hidden kept place extends the visible name', async () => {
+    const fixture = loadFixture('dense-settlements');
+    const { renamer } = loadScenario('dense-settlements', {
+        userscriptStorage: {
+            [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
+                activityId: fixture.activityId,
+                kept: fixture.expected.split(' - '),
+                placeCount: 2,
+            }]),
+        },
+    });
+    await renamer.generate();
+    openPanel(renamer);
+
+    assert.equal(chipNames(renamer).length, 2);
+    assert.doesNotMatch(renamer.name, /Sielow/);
+
+    passedRowButton(renamer, 'Add', 'Sielow').click();
+
+    assert.equal(renamer.name, 'Cottbus - Sielow - Cottbus');
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), [{
+        activityId: fixture.activityId,
+        kept: ['Cottbus', 'Sielow', 'Cottbus'],
+        placeCount: 3,
+    }]);
 });
 
 test('the panel chevron stays free of edit counters', async () => {
@@ -146,7 +217,7 @@ test('a name added to one ride reaches no other activity', async () => {
     const { renamer } = loadScenario('dense-settlements', {
         userscriptStorage: {
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([
-                { activityId: '19000955531', kept: ['Werben'], dropped: [] },
+                { activityId: '19000955531', kept: ['Werben'] },
             ]),
         },
     });

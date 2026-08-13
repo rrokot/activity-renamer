@@ -9,6 +9,7 @@ import {
     panelButton,
     panelField,
     panelText,
+    passedRowButton,
     sectionTitles,
     typeInto,
 } from './support/panel.mjs';
@@ -158,6 +159,7 @@ test('shows the calculated place count and overrides it for this ride', async ()
         'the explanatory note is not permanently visible',
     );
     const calculatedCount = Number(limit.value);
+    const namesBeforeSlider = chipNames(renamer);
 
     slider.value = '6';
     slider.dispatchEvent({ type: 'input' });
@@ -173,6 +175,13 @@ test('shows the calculated place count and overrides it for this ride', async ()
         'the chips update while the slider is moving');
     assert.equal(panelField(renamer, 'activity-renamer-name-place-count-slider'), slider,
         'live updates keep the dragged slider mounted');
+    const namesAfterSlider = chipNames(renamer);
+    const returnedPlace = namesBeforeSlider.find(name =>
+        namesBeforeSlider.filter(candidate => candidate === name).length
+        > namesAfterSlider.filter(candidate => candidate === name).length);
+    assert.ok(returnedPlace, 'reducing the count removes one place from the name');
+    assert.ok(passedRowButton(renamer, 'Add', returnedPlace),
+        'the removed place returns to Other places while the slider is moving');
 
     const shortened = panelField(renamer, 'activity-renamer-name-place-count');
     shortened.value = '3';
@@ -182,7 +191,6 @@ test('shows the calculated place count and overrides it for this ride', async ()
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), [{
         activityId: fixture.activityId,
         kept: [],
-        dropped: [],
         placeCount: 3,
     }]);
     assert.equal(renamer.panelToggleButton.textContent, '');
@@ -239,7 +247,6 @@ test('treats the selected count as final when a manual place would exceed it', a
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: fixture.activityId,
                 kept: ['Werben'],
-                dropped: [],
             }]),
         },
     });
