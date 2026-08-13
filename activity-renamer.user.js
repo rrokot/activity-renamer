@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.2
+// @version      0.1.3
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -117,6 +117,10 @@
     color: var(--color-coreo3);
     background-color: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--color-coreo3);
+}
+.activity-renamer-button--secondary.activity-renamer-button--secondary[disabled] {
+    opacity: 0.5;
+    cursor: default;
 }
 .activity-renamer-controls { display: flex; align-items: center; }
 .activity-renamer-overlay {
@@ -1825,6 +1829,12 @@
         const { kept, dropped } = loadRideNames();
         const edits = kept.length + dropped.length;
         button.textContent = edits > 0 ? `${STRINGS.editName} (${edits})` : STRINGS.editName;
+        const ready = lastRouteAnalysis?.activityId === getActivityId();
+        button.disabled = !ready;
+        if (!ready) {
+            button.title = 'Build the name first';
+            return;
+        }
         button.title = edits > 0
             ? `${STRINGS.editNameTitle} — ${edits} change${edits === 1 ? '' : 's'} of your own`
             : STRINGS.editNameTitle;
@@ -2567,6 +2577,8 @@
         }
 
         button.disabled = true;
+        const editNameButton = document.getElementById(EDIT_NAME_BUTTON_ID);
+        if (editNameButton) editNameButton.disabled = true;
         setButtonState(button, STRINGS.downloading, 'loading');
 
         try {
@@ -2591,10 +2603,10 @@
                     + ` and ${routeFeatures.roadCount} named roads`));
 
             const activityName = buildActivityName(routeFeatures.passages, track);
-            lastRouteAnalysis = { activityId, track, passages: activityName.passages };
             if (activityName.names.length === 0) {
                 throw new Error('The route has no named OSM place, road, or savedPlace radius.');
             }
+            lastRouteAnalysis = { activityId, track, passages: activityName.passages };
 
             // Logged after the fact: an over-long narrative reaches the field
             // shortened, and the log should show what was actually written.
@@ -2610,6 +2622,7 @@
         } finally {
             button.disabled = false;
             setButtonState(button, STRINGS.idle);
+            updateEditNameButton();
         }
     }
 

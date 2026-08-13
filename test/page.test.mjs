@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
     loadRenamer,
+    loadScenario,
 } from './support/harness.mjs';
 // A page's style-src cannot block a constructed stylesheet.
 test('adopts its stylesheet through the CSSOM', async () => {
@@ -20,6 +21,19 @@ test('stops watching the whole page once the button is in', async () => {
     assert.ok(renamer.button, 'the button is injected on load');
     assert.equal(renamer.observers.filter(observer => observer.connected).length, 1,
         'exactly one narrow observer is left watching');
+});
+
+test('enables editing only after the route name is built', async () => {
+    const { renamer } = loadScenario('loop-with-revisit');
+    await renamer.ready;
+
+    assert.equal(renamer.editNameButton.disabled, true);
+    assert.equal(renamer.editNameButton.title, 'Build the name first');
+
+    await renamer.generate();
+
+    assert.equal(renamer.editNameButton.disabled, false);
+    assert.equal(renamer.editNameButton.title, 'Edit the activity name');
 });
 
 test('re-injects the button when Strava re-renders the title field', async () => {
@@ -51,4 +65,5 @@ test('reports an activity without GPS instead of naming it', async () => {
 
     assert.deepEqual(renamer.alerts, ['No GPS data found (manual entry or indoor activity?)']);
     assert.equal(renamer.name, '');
+    assert.equal(renamer.editNameButton.disabled, true);
 });
