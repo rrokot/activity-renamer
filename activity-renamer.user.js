@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.9
+// @version      0.1.10
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
+// @homepageURL  https://github.com/rrokot/activity-renamer
+// @supportURL   https://github.com/rrokot/activity-renamer/issues
+// @updateURL    https://raw.githubusercontent.com/rrokot/activity-renamer/master/activity-renamer.user.js
+// @downloadURL  https://raw.githubusercontent.com/rrokot/activity-renamer/master/activity-renamer.user.js
 // @match        https://www.strava.com/activities/*/edit
 // @grant        GM.xmlHttpRequest
 // @grant        GM.getValues

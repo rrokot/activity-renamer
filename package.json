@@ -1,6 +1,6 @@
 {
     "name": "activity-renamer",
-    "version": "0.1.9",
+    "version": "0.1.10",
     "private": true,
     "description": "Userscript that names a Strava activity after the places its route passed",
     "type": "module",
