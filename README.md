@@ -1,10 +1,9 @@
-# Activity Renamer
+# Strava Activity Renamer
 
-Tampermonkey userscript that names Strava activities by places along the route.
+Strava activity names from OpenStreetMap
+places along the route.
 
-```text
-Cottbus - Sielow - Guhrow - Burg - Dissen - Sielow - Cottbus
-```
+![Activity Renamer inline editor](docs/images/activity-renamer-inline-editor.png)
 
 ## Naming
 
