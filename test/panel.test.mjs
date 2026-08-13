@@ -22,6 +22,7 @@ import {
 
 const FAVORITES_KEY = 'activity_renamer_saved_places_v1';
 const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
+const AUTO_PLACE_SPACING_KEY = 'activity_renamer_auto_place_spacing_km_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -46,7 +47,9 @@ test('the four place collections behave as one tab set', async () => {
     const places = panelButton(renamer, 'Other places');
     const roads = panelButton(renamer, 'Other roads');
     const tabs = [places, roads, favorites, never];
-    const sectionIcons = renamer.panel.querySelectorAll('svg');
+    const tablist = renamer.panel.querySelectorAll('div')
+        .find(element => element.className === 'activity-renamer-section-tabs');
+    const sectionIcons = tablist.querySelectorAll('svg');
     assert.equal(sectionIcons.length, 4);
     assert.ok(sectionIcons.every(icon => icon.getAttribute('aria-hidden') === 'true'));
     assert.ok(tabs
@@ -58,8 +61,6 @@ test('the four place collections behave as one tab set', async () => {
         .every(span => !span.className.includes('activity-renamer-chevron'))));
     assert.equal(places.className, favorites.className,
         'all four collections use the same visual treatment');
-    const tablist = renamer.panel.querySelectorAll('div')
-        .find(element => element.className === 'activity-renamer-section-tabs');
     assert.equal(tablist.getAttribute('role'), 'tablist');
     assert.ok(tabs.every(tab => tab.getAttribute('role') === 'tab'));
     assert.equal(places.getAttribute('aria-selected'), 'true');
@@ -120,6 +121,65 @@ test('embeds a region beside Title and leaves focus in the page flow', async () 
     assert.equal(renamer.panelToggleButton.getAttribute('aria-expanded'), 'false');
 });
 
+test('stores a permanent automatic place density', async () => {
+    const { renamer } = loadScenario('dense-settlements');
+    await renamer.generate();
+    openPanel(renamer);
+
+    const density = panelField(renamer, 'activity-renamer-auto-place-spacing');
+    assert.equal(density.type, 'number');
+    assert.equal(density.min, '0.1');
+    assert.equal(density.max, undefined, 'the density field has no upper limit');
+    assert.equal(density.step, '0.1');
+    assert.equal(density.value, '1.3');
+    const densityLabel = renamer.panel.querySelector(
+        'label[for="activity-renamer-auto-place-spacing"]',
+    );
+    assert.equal(densityLabel.className, 'activity-renamer-sr-only');
+    assert.match(density.title, /map span divided by this value/i);
+    const count = panelField(renamer, 'activity-renamer-name-place-count');
+    assert.equal(density.parentNode, count.parentNode);
+    assert.ok(density.parentNode.children.indexOf(density)
+        > density.parentNode.children.indexOf(count),
+    'the unlabeled density input sits directly to the right of the place count');
+    assert.equal(count.dataset.modeActive, 'false');
+    assert.equal(density.dataset.modeActive, 'true');
+    assert.match(density.title, /automatic mode is active/i);
+    assert.match(
+        renamer.document.adoptedStyleSheets[0].cssText,
+        /activity-renamer-mode-field\[data-mode-active="true"\]/,
+    );
+
+    count.value = '6';
+    count.dispatchEvent({ type: 'input' });
+    assert.equal(renamer.name.split(' - ').length, 6);
+    assert.equal(count.dataset.modeActive, 'true');
+    assert.equal(density.dataset.modeActive, 'false');
+    assert.match(count.title, /active/i);
+
+    typeInto(density, '8');
+
+    assert.equal(JSON.parse(renamer.userscriptStore.get(AUTO_PLACE_SPACING_KEY)), 8);
+    assert.equal(renamer.name.split(' - ').length, 3);
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), [],
+        'changing density returns the current activity to automatic mode');
+    assert.equal(panelField(renamer, 'activity-renamer-name-place-count').value, '3');
+    assert.equal(count.dataset.modeActive, 'false');
+    assert.equal(density.dataset.modeActive, 'true');
+
+    const invalid = density;
+    invalid.value = '0';
+    invalid.dispatchEvent({ type: 'change' });
+
+    assert.equal(JSON.parse(renamer.userscriptStore.get(AUTO_PLACE_SPACING_KEY)), 8);
+    assert.match(panelText(renamer), /number of 0\.1 or more/i);
+    assert.equal(
+        panelField(renamer, 'activity-renamer-auto-place-spacing')
+            .getAttribute('aria-describedby'),
+        'activity-renamer-auto-place-spacing-note',
+    );
+});
+
 test('shows the calculated place count and overrides it for this ride', async () => {
     const { fixture, renamer } = loadScenario('dense-settlements');
     await renamer.generate();
@@ -161,17 +221,17 @@ test('shows the calculated place count and overrides it for this ride', async ()
     const calculatedCount = Number(limit.value);
     const namesBeforeSlider = chipNames(renamer);
 
-    slider.value = '6';
+    slider.value = '4';
     slider.dispatchEvent({ type: 'input' });
 
-    assert.equal(renamer.name.split(' - ').length, 6,
+    assert.equal(renamer.name.split(' - ').length, 4,
         'dragging the slider updates the name immediately');
-    assert.equal(limit.value, '6', 'the linked number follows the slider');
+    assert.equal(limit.value, '4', 'the linked number follows the slider');
     assert.equal(
         slider.style.getPropertyValue('--activity-renamer-slider-progress'),
-        '50%',
+        '25%',
     );
-    assert.equal(chipNames(renamer).length, 6,
+    assert.equal(chipNames(renamer).length, 4,
         'the chips update while the slider is moving');
     assert.equal(panelField(renamer, 'activity-renamer-name-place-count-slider'), slider,
         'live updates keep the dragged slider mounted');
@@ -235,7 +295,10 @@ test('shows the calculated place count and overrides it for this ride', async ()
     automatic.dispatchEvent({ type: 'change' });
 
     assert.equal(renamer.name, fixture.expected);
-    assert.equal(panelField(renamer, 'activity-renamer-name-place-count').value, '7');
+    assert.equal(
+        panelField(renamer, 'activity-renamer-name-place-count').value,
+        String(fixture.expected.split(' - ').length),
+    );
     assert.deepEqual(JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)), []);
     assert.equal(renamer.panelToggleButton.textContent, '');
 });

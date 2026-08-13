@@ -1,7 +1,7 @@
 {
     "activityId": "19000955531",
     "description": "Short ride out of one village: too few settlements for the automatic limit, so named roads fill the empty slots. Feldweg sits on the route but its highway type is not nameworthy.",
-    "expected": "Sielow - Dorfstraße - Kolkwitzer Straße - Dorfstraße - Sielow",
+    "expected": "Sielow - Kolkwitzer Straße - Sielow",
     "stepM": 15,
     "places": [
         { "id": 240090442, "name": "Sielow - Žylow", "place": "village", "lat": 51.793, "lon": 14.287 }

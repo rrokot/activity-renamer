@@ -34,6 +34,7 @@ places along the route.
 - Add, rename or remove places for the current activity.
 - Adjust the 2–10 place slider above the name chips, or enter a larger number
   in the linked field; it starts at the calculated value for this activity.
+- Set the permanent automatic density as kilometres of map span per place.
 - Browse unused route places and named roads in separate tabs.
 - Save preferred place names for future activities in **Favorites**.
 - Manage unwanted names separately in **Excluded**.

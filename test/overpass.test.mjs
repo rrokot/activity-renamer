@@ -11,6 +11,7 @@ import {
 } from './support/harness.mjs';
 
 const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
+const AUTO_PLACE_SPACING_KEY = 'activity_renamer_auto_place_spacing_km_v1';
 test('reuses the cached landmarks on the second run', async () => {
     const { fixture, renamer } = loadScenario('loop-with-revisit');
 
@@ -75,6 +76,24 @@ test('reuses the feature cache after the ride place-count override changes', asy
     );
     assert.equal(second.renamer.overpassRequestCount(), 0,
         'the activity place-count override does not invalidate cached OSM passages');
+});
+
+test('reuses the feature cache after the automatic place density changes', async () => {
+    const first = loadScenario('dense-settlements');
+    await first.renamer.generate();
+
+    const cacheKey = `activity_renamer_features_v2_${first.fixture.activityId}`;
+    const cached = first.renamer.localStorage.getItem(cacheKey);
+    const second = loadScenario('dense-settlements', {
+        storage: { [cacheKey]: cached },
+        userscriptStorage: { [AUTO_PLACE_SPACING_KEY]: JSON.stringify(8) },
+    });
+
+    const name = await second.renamer.generate();
+
+    assert.equal(name.split(' - ').length, 3);
+    assert.equal(second.renamer.overpassRequestCount(), 0,
+        'density changes only the selection and keep cached OSM passages');
 });
 
 test('falls over to another Overpass mirror when one is busy', async () => {

@@ -56,6 +56,15 @@ test('spreads the limited slots over the map when settlements are dense', async 
     for (const part of parts) assert.ok(known.has(part), `${part} is not a fixture place`);
 });
 
+test('counts endpoints and Favorites inside the automatic place target', async () => {
+    const { fixture, renamer } = loadScenario('short-route');
+
+    const name = await renamer.generate();
+
+    assert.equal(name, fixture.expected);
+    assert.equal(name.split(' - ').length, 3);
+});
+
 // The browser always names the full-resolution GPX, while the fixtures are
 // coarse. A different sampling must not pick different corners.
 test('names a full-resolution track the same way', async () => {

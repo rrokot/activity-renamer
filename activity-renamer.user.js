@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.14
+// @version      0.1.15
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -35,7 +35,8 @@
         autoNamePlaceCeiling: 7,
         minNamePlaces: 2,
         namePlaceSliderMax: 10,
-        autoPlaceSpacingKm: 4,
+        autoPlaceSpacingKm: 1.3,
+        autoPlaceSpacingMinKm: 0.1,
         favoriteRadiusM: 200,
         favoriteRadiusMinM: 10,
         favoriteRadiusMaxM: 5000,
@@ -77,6 +78,7 @@
         favorites: 'activity_renamer_saved_places_v1',
         blockedNames: 'activity_renamer_blocked_names_v1',
         rideOverrides: 'activity_renamer_ride_names_v1',
+        autoPlaceSpacingKm: 'activity_renamer_auto_place_spacing_km_v1',
     };
     const settings = new Map();
     // One stylesheet instead of a style object per element. It is adopted
@@ -328,6 +330,13 @@
     flex: 0 0 auto;
     min-width: 64px;
     width: 64px;
+}
+.activity-renamer-panel .activity-renamer-mode-field {
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.activity-renamer-panel .activity-renamer-mode-field[data-mode-active="true"] {
+    border-color: var(--color-coreo3);
+    box-shadow: inset 0 -2px 0 var(--color-coreo3);
 }
 .activity-renamer-panel .activity-renamer-status {
     min-height: 18px;
@@ -596,6 +605,18 @@
         const minimum = minimumNamePlaces();
         const normalized = Number(value);
         return Number.isInteger(normalized) && normalized >= minimum ? normalized : null;
+    }
+
+    function normalizeAutoPlaceSpacingKm(value) {
+        const normalized = Number(value);
+        return Number.isFinite(normalized) && normalized >= CONFIG.autoPlaceSpacingMinKm
+            ? normalized
+            : null;
+    }
+
+    function autoPlaceSpacingKm() {
+        return normalizeAutoPlaceSpacingKm(readSetting(STORAGE_KEY.autoPlaceSpacingKm))
+            ?? CONFIG.autoPlaceSpacingKm;
     }
 
     // A name typed into a field, loaded from storage or read from OSM reaches
@@ -929,15 +950,12 @@
         };
     }
 
-    // The cache stores passages, which are the *output* of these settings and
-    // not raw OSM data, so every setting that can change them belongs in the
-    // signature. Add a key here whenever a new one starts influencing them.
+    // The cache stores passages, not the later selection of passages for a
+    // title. Only settings that change landmark discovery belong here.
     const CACHE_RELEVANT_CONFIG = [
         'placeRadiusM',
         'roadMatchRadiusM',
         'overpassMaxRoutePoints',
-        'minAutoPlaces',
-        'autoPlaceSpacingKm',
         'stripPlaceParentheticals',
     ];
 
@@ -1591,7 +1609,7 @@
     function automaticPlaceLimit(track, ceiling = CONFIG.autoNamePlaceCeiling) {
         const minimum = Math.max(1, Math.floor(CONFIG.minAutoPlaces));
         const maximum = Math.max(minimum, Math.floor(ceiling));
-        const spacingKm = Math.max(1, Number(CONFIG.autoPlaceSpacingKm));
+        const spacingKm = autoPlaceSpacingKm();
         return Math.max(
             minimum,
             Math.min(maximum, Math.round(routeMapExtentKm(track) / spacingKm)),
@@ -1776,7 +1794,9 @@
         const automaticLimit = placeCount === null
             ? Math.min(availableAutomaticSlots, Math.max(
                 0,
-                automaticPlaceLimit(track, namePlaceLimit) - selectedForced.size,
+                automaticPlaceLimit(track, namePlaceLimit)
+                    - endpointIndices.size
+                    - selectedForced.size,
             ))
             : availableAutomaticSlots;
         // What the automatic slots may still choose from: everything the name
@@ -2568,6 +2588,7 @@
             activeCollection: 'places',
             refreshCollection: null,
             countError: '',
+            densityError: '',
             search: { query: '', candidates: [], status: '', error: false, busy: false },
         };
     }
@@ -2737,7 +2758,50 @@
             inputMode: 'numeric',
             value: String(state.view.names.length),
         });
+        input.className += ' activity-renamer-mode-field';
         if (state.countError) input.setAttribute('aria-describedby', noteId);
+
+        const densityId = 'activity-renamer-auto-place-spacing';
+        const densityNoteId = 'activity-renamer-auto-place-spacing-note';
+        const densityExplanation = 'Automatic density, saved for every activity: '
+            + `map span divided by this value, rounded to ${
+                CONFIG.minAutoPlaces}–${CONFIG.autoNamePlaceCeiling} places.`;
+        const densityLabel = createFieldLabel(
+            densityId,
+            'Kilometres of map span per automatic place',
+        );
+        const densityInput = createPanelInput({
+            id: densityId,
+            type: 'number',
+            min: String(CONFIG.autoPlaceSpacingMinKm),
+            step: '0.1',
+            inputMode: 'decimal',
+            value: String(autoPlaceSpacingKm()),
+            title: densityExplanation,
+        });
+        densityInput.className += ' activity-renamer-mode-field';
+        if (state.densityError) densityInput.setAttribute('aria-describedby', densityNoteId);
+
+        const syncMode = automatic => {
+            input.dataset.modeActive = String(!automatic);
+            densityInput.dataset.modeActive = String(automatic);
+            input.title = automatic
+                ? 'Manual place count for this activity. Change it to switch to manual mode.'
+                : 'Manual place count for this activity — active.';
+            input.setAttribute(
+                'aria-label',
+                `Manual place count for this activity${automatic ? '' : ', active mode'}`,
+            );
+            densityInput.title = `${densityExplanation} ${automatic
+                ? 'Automatic mode is active.'
+                : 'Change it to switch to automatic mode.'}`;
+            densityInput.setAttribute(
+                'aria-label',
+                `${densityLabel.textContent}${automatic ? ', active mode' : ''}`,
+            );
+        };
+        syncMode(loadRideOverride().placeCount === null);
+
         const applyValue = (rawValue, { allowReset, reportInvalid }) => {
             const activityId = getActivityId();
             const current = loadRideOverride(activityId);
@@ -2745,6 +2809,7 @@
                 if (!allowReset) return;
                 saveRideOverride(activityId, { ...current, placeCount: null });
                 state.countError = '';
+                syncMode(true);
                 refreshActivityName();
                 render(inputId);
                 return;
@@ -2759,7 +2824,37 @@
             }
             saveRideOverride(activityId, { ...current, placeCount: value });
             state.countError = '';
+            syncMode(false);
             refreshActivityName();
+            updateChips();
+        };
+        const applyDensity = (rawValue, reportInvalid) => {
+            const value = normalizeAutoPlaceSpacingKm(rawValue);
+            if (value === null) {
+                if (reportInvalid) {
+                    state.densityError = `Enter a number of ${
+                        CONFIG.autoPlaceSpacingMinKm} or more.`;
+                    render(densityId);
+                }
+                return;
+            }
+
+            writeSetting(STORAGE_KEY.autoPlaceSpacingKm, value);
+            const activityId = getActivityId();
+            if (activityId) {
+                const current = loadRideOverride(activityId);
+                saveRideOverride(activityId, { ...current, placeCount: null });
+            }
+            state.countError = '';
+            state.densityError = '';
+            syncMode(true);
+            refreshActivityName();
+
+            const names = currentActivityNames();
+            if (!names) return;
+            input.value = String(names.length);
+            slider.value = String(Math.min(sliderMaximum, Math.max(minimum, names.length)));
+            syncSliderProgress();
             updateChips();
         };
         slider.addEventListener('input', () => {
@@ -2788,13 +2883,26 @@
             });
             if (!state.countError && input.value.trim() !== '') render(inputId);
         });
+        densityInput.addEventListener('input', () => {
+            applyDensity(densityInput.value, false);
+        });
+        densityInput.addEventListener('change', () => {
+            applyDensity(densityInput.value, true);
+        });
+        activateOnEnter(densityInput, () => applyDensity(densityInput.value, true));
 
-        controls.append(sliderLabel, slider, inputLabel, input);
+        controls.append(sliderLabel, slider, inputLabel, input, densityLabel, densityInput);
         section.append(controls);
         if (state.countError) {
             const note = createPanelNote(state.countError);
             note.className = 'activity-renamer-note activity-renamer-status--error';
             note.id = noteId;
+            section.append(note);
+        }
+        if (state.densityError) {
+            const note = createPanelNote(state.densityError);
+            note.className = 'activity-renamer-note activity-renamer-status--error';
+            note.id = densityNoteId;
             section.append(note);
         }
         panel.append(section);

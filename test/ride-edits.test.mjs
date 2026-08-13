@@ -16,13 +16,13 @@ const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
 
 test('leaves a blocked place out of the name', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
-        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Guhrow']) },
+        userscriptStorage: { [BLOCKED_KEY]: JSON.stringify(['Burg']) },
     });
 
     const name = await renamer.generate();
 
-    assert.equal(name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
-    assert.ok(renamer.logs.some(line => line.includes('Blocked from the name: Guhrow')));
+    assert.equal(name, 'Cottbus - Sielow - Guhrow - Dissen - Sielow - Cottbus');
+    assert.ok(renamer.logs.some(line => line.includes('Blocked from the name: Burg')));
 });
 
 test('blocks by name regardless of spelling case', async () => {
@@ -50,41 +50,41 @@ test('removing a chip does not exclude its place', async () => {
 
     assert.equal(await renamer.generate(), fixture.expected);
     openPanel(renamer);
-    nameChip(renamer, 'Guhrow').drop.click();
+    nameChip(renamer, 'Burg').drop.click();
 
-    assert.equal(renamer.name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
-    assert.ok(!chipNames(renamer).includes('Guhrow'), 'the chip is gone from the name');
+    assert.equal(renamer.name, 'Cottbus - Sielow - Guhrow - Dissen - Sielow - Cottbus');
+    assert.ok(!chipNames(renamer).includes('Burg'), 'the chip is gone from the name');
     assert.deepEqual(
         JSON.parse(renamer.userscriptStore.get(ACTIVITY_OVERRIDES_KEY)),
         [{
             activityId: fixture.activityId,
-            kept: ['Cottbus', 'Sielow', 'Burg', 'Dissen', 'Sielow', 'Cottbus'],
+            kept: ['Cottbus', 'Sielow', 'Guhrow', 'Dissen', 'Sielow', 'Cottbus'],
             placeCount: 6,
         }],
         'the remaining name is stored without a banned-place list',
     );
-    const exclude = passedRowButton(renamer, 'Exclude', 'Guhrow');
+    const exclude = passedRowButton(renamer, 'Exclude', 'Burg');
     assert.equal(exclude.getAttribute('aria-pressed'), 'false');
     assert.equal(
         exclude.parentNode.parentNode.children[0].children[1].textContent.includes('Excluded'),
         false,
     );
 
-    passedRowButton(renamer, 'Add', 'Guhrow').click();
+    passedRowButton(renamer, 'Add', 'Burg').click();
 
     assert.equal(renamer.name, fixture.expected, 'the removed place remains available');
     assert.equal(renamer.userscriptStore.has(BLOCKED_KEY), false);
 
-    nameChip(renamer, 'Guhrow').drop.click();
-    passedRowButton(renamer, 'Exclude', 'Guhrow').click();
+    nameChip(renamer, 'Burg').drop.click();
+    passedRowButton(renamer, 'Exclude', 'Burg').click();
 
-    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)), ['Guhrow']);
-    assert.equal(renamer.name, 'Cottbus - Sielow - Burg - Dissen - Sielow - Cottbus');
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(BLOCKED_KEY)), ['Burg']);
+    assert.equal(renamer.name, 'Cottbus - Sielow - Guhrow - Dissen - Sielow - Cottbus');
 
     panelButton(renamer, 'Excluded').click();
     panelButton(renamer, 'Unblock').click();
     panelButton(renamer, 'Other places').click();
-    passedRowButton(renamer, 'Add', 'Guhrow').click();
+    passedRowButton(renamer, 'Add', 'Burg').click();
 
     assert.equal(renamer.name, fixture.expected);
 });
