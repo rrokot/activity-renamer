@@ -20,7 +20,7 @@ import {
     loadScenario,
 } from './support/harness.mjs';
 
-const SAVED_PLACES_KEY = 'strava_route_saved_places_v1';
+const SAVED_PLACES_KEY = 'activity_renamer_saved_places_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -60,9 +60,9 @@ test('renames a place from its chip in the name', async () => {
     // The chip is the place: clicking its name is how it gets another one.
     nameChip(renamer, 'Burg').rename.click();
 
-    typeInto(dialogField(renamer, 'strava-route-place-name-input'), 'Gurkenpause');
-    typeInto(dialogField(renamer, 'strava-route-place-radius-input'), '500');
-    submitForm(dialogField(renamer, 'strava-route-place-name-input'));
+    typeInto(dialogField(renamer, 'activity-renamer-place-name-input'), 'Gurkenpause');
+    typeInto(dialogField(renamer, 'activity-renamer-place-radius-input'), '500');
+    submitForm(dialogField(renamer, 'activity-renamer-place-name-input'));
 
     assert.equal(renamer.alerts.length, 0, 'nothing is asked through a modal prompt');
     assert.match(renamer.name, /Gurkenpause/);
@@ -77,12 +77,12 @@ test('reports a bad radius in the form and keeps the values', async () => {
     openDialog(renamer);
     nameChip(renamer, 'Burg').rename.click();
 
-    typeInto(dialogField(renamer, 'strava-route-place-name-input'), 'Zu weit');
-    typeInto(dialogField(renamer, 'strava-route-place-radius-input'), '9000');
-    submitForm(dialogField(renamer, 'strava-route-place-name-input'));
+    typeInto(dialogField(renamer, 'activity-renamer-place-name-input'), 'Zu weit');
+    typeInto(dialogField(renamer, 'activity-renamer-place-radius-input'), '9000');
+    submitForm(dialogField(renamer, 'activity-renamer-place-name-input'));
 
     assert.match(dialogText(renamer), /radius must be a number from 10 to 5000/i);
-    assert.equal(dialogField(renamer, 'strava-route-place-name-input').value, 'Zu weit',
+    assert.equal(dialogField(renamer, 'activity-renamer-place-name-input').value, 'Zu weit',
         'the typed name survives the error');
     assert.equal(renamer.userscriptStore.has(SAVED_PLACES_KEY), false);
 });
@@ -110,7 +110,7 @@ test('offers the saved places as a JSON backup', () => {
     });
 
     openDialog(renamer);
-    const backup = JSON.parse(dialogField(renamer, 'strava-route-backup-input').value);
+    const backup = JSON.parse(dialogField(renamer, 'activity-renamer-backup-input').value);
     dialogButton(renamer, 'Copy').click();
 
     assert.deepEqual(backup.savedPlaces, [burgPlace]);
@@ -121,7 +121,7 @@ test('imports a pasted backup after confirming', () => {
     const renamer = loadRenamer({ userscriptManager: true });
     openDialog(renamer);
 
-    typeInto(dialogField(renamer, 'strava-route-backup-input'),
+    typeInto(dialogField(renamer, 'activity-renamer-backup-input'),
         JSON.stringify({ savedPlaces: [burgPlace] }));
     dialogButton(renamer, 'Import').click();
 
@@ -140,7 +140,7 @@ test('rejects a malformed backup without touching the saved places', () => {
     });
     openDialog(renamer);
 
-    typeInto(dialogField(renamer, 'strava-route-backup-input'), 'not json at all');
+    typeInto(dialogField(renamer, 'activity-renamer-backup-input'), 'not json at all');
     dialogButton(renamer, 'Import').click();
     dialogButton(renamer, 'Replace everything').click();
 
@@ -160,15 +160,15 @@ test('searching an address offers it as a place to save', async () => {
     });
 
     openDialog(renamer);
-    typeInto(dialogField(renamer, 'strava-route-address-input'), 'Bismarckturm Burg');
-    submitForm(dialogField(renamer, 'strava-route-address-input'));
+    typeInto(dialogField(renamer, 'activity-renamer-address-input'), 'Bismarckturm Burg');
+    submitForm(dialogField(renamer, 'activity-renamer-address-input'));
     await renamer.settle();
 
     assert.match(dialogText(renamer), /Bismarckturm/);
     assert.match(dialogText(renamer), /Found 1/);
 
     dialogButton(renamer, '☆ Save').click();
-    submitForm(dialogField(renamer, 'strava-route-place-name-input'));
+    submitForm(dialogField(renamer, 'activity-renamer-place-name-input'));
 
     assert.equal(JSON.parse(renamer.localStorage.getItem(SAVED_PLACES_KEY))[0].name, 'Bismarckturm');
 });

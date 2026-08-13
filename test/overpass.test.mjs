@@ -19,14 +19,14 @@ test('reuses the cached landmarks on the second run', async () => {
     assert.equal(second, fixture.expected);
     assert.equal(renamer.overpassRequestCount(), 1, 'the second run is served from cache');
     assert.ok(
-        [...renamer.localStorage.store.keys()].some(key => key.startsWith('strava_route_features_')),
+        [...renamer.localStorage.store.keys()].some(key => key.startsWith('activity_renamer_features_')),
         'passages are cached per activity',
     );
 });
 
 test('discards a cache written under different naming settings', async () => {
     const fixture = loadFixture('loop-with-revisit');
-    const cacheKey = `strava_route_features_v1_${fixture.activityId}`;
+    const cacheKey = `activity_renamer_features_v1_${fixture.activityId}`;
     const { renamer } = loadScenario('loop-with-revisit', {
         storage: {
             [cacheKey]: JSON.stringify({

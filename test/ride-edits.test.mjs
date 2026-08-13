@@ -13,8 +13,8 @@ import {
 } from './support/dialog.mjs';
 import { loadFixture, loadScenario } from './support/harness.mjs';
 
-const BLOCKED_KEY = 'strava_route_blocked_names_v1';
-const RIDE_KEY = 'strava_route_ride_names_v1';
+const BLOCKED_KEY = 'activity_renamer_blocked_names_v1';
+const RIDE_KEY = 'activity_renamer_ride_names_v1';
 
 test('leaves a blocked place out of the name', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
@@ -163,11 +163,11 @@ test('carries blocked names through a backup', () => {
     });
 
     openDialog(renamer);
-    const backup = JSON.parse(dialogField(renamer, 'strava-route-backup-input').value);
+    const backup = JSON.parse(dialogField(renamer, 'activity-renamer-backup-input').value);
 
     assert.deepEqual(backup.blockedNames, ['Guhrow']);
 
-    typeInto(dialogField(renamer, 'strava-route-backup-input'),
+    typeInto(dialogField(renamer, 'activity-renamer-backup-input'),
         JSON.stringify({ savedPlaces: [], blockedNames: ['Werben', 'Werben', 'Dissen'] }));
     dialogButton(renamer, 'Import').click();
     dialogButton(renamer, 'Replace everything').click();

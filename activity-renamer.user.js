@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Strava Route Renamer
-// @namespace    https://github.com/rrokot/strava-route-renamer
-// @version      6.0.0
+// @name         Activity Renamer
+// @namespace    https://github.com/rrokot/activity-renamer
+// @version      6.0.2
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @match        https://www.strava.com/activities/*/edit
@@ -70,12 +70,12 @@
         'https://overpass.private.coffee/api/interpreter',
     ];
     const CACHE_PREFIX = {
-        routeFeatures: 'strava_route_features_v1_',
+        routeFeatures: 'activity_renamer_features_v1_',
     };
     const STORAGE_KEY = {
-        savedPlaces: 'strava_route_saved_places_v1',
-        blockedNames: 'strava_route_blocked_names_v1',
-        rideNames: 'strava_route_ride_names_v1',
+        savedPlaces: 'activity_renamer_saved_places_v1',
+        blockedNames: 'activity_renamer_blocked_names_v1',
+        rideNames: 'activity_renamer_ride_names_v1',
     };
     // One stylesheet instead of a style object per element. It is adopted
     // through the CSSOM rather than injected as a <style> tag, because a
@@ -89,9 +89,9 @@
     // :root by the page, so the dialog follows the site instead of guessing at
     // it. They are used without a var() fallback: if Strava ever renames one,
     // the affected rule drops out rather than silently drifting out of date.
-    const STYLE_ID = 'strava-route-styles';
+    const STYLE_ID = 'activity-renamer-styles';
     const STYLES = `
-.strava-route-button.strava-route-button {
+.activity-renamer-button.activity-renamer-button {
     flex: 0 0 auto;
     margin-left: auto;
     padding: var(--space-3xs) var(--space-2xs);
@@ -103,26 +103,26 @@
     border-radius: var(--border-radius-sm);
     cursor: pointer;
 }
-.strava-route-button.strava-route-button:hover[data-state="idle"] {
+.activity-renamer-button.activity-renamer-button:hover[data-state="idle"] {
     background-color: var(--color-extendedorangeo2);
 }
-.strava-route-button.strava-route-button[data-state="loading"] {
+.activity-renamer-button.activity-renamer-button[data-state="loading"] {
     background-color: var(--color-extendedneutraln4);
 }
-.strava-route-button.strava-route-button[data-state="success"] {
+.activity-renamer-button.activity-renamer-button[data-state="success"] {
     background-color: var(--color-extendedgreeng2);
 }
-.strava-route-button.strava-route-button[data-state="error"] {
+.activity-renamer-button.activity-renamer-button[data-state="error"] {
     background-color: var(--color-extendedredr3);
 }
-.strava-route-button--secondary.strava-route-button--secondary {
+.activity-renamer-button--secondary.activity-renamer-button--secondary {
     margin-left: var(--space-3xs);
     color: var(--color-coreo3);
     background-color: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--color-coreo3);
 }
-.strava-route-controls { display: flex; align-items: center; }
-.strava-route-overlay {
+.activity-renamer-controls { display: flex; align-items: center; }
+.activity-renamer-overlay {
     position: fixed;
     inset: 0;
     z-index: 10000;
@@ -132,7 +132,7 @@
     padding: var(--space-md);
     background: rgba(0, 0, 0, 0.45);
 }
-.strava-route-overlay .strava-route-panel {
+.activity-renamer-overlay .activity-renamer-panel {
     width: min(680px, 100%);
     max-height: 85vh;
     overflow-y: auto;
@@ -142,22 +142,22 @@
     border-radius: var(--border-radius-md);
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
 }
-.strava-route-overlay .strava-route-header {
+.activity-renamer-overlay .activity-renamer-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-xs);
 }
-.strava-route-overlay .strava-route-header h3 { margin: 0; }
-.strava-route-overlay .strava-route-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
+.activity-renamer-overlay .activity-renamer-header h3 { margin: 0; }
+.activity-renamer-overlay .activity-renamer-panel h4 { margin: var(--space-md) 0 var(--space-3xs); }
 /* Whichever section renders first opens flush with the preview above it. */
-.strava-route-overlay .strava-route-panel > h4:first-of-type { margin-top: 0; }
-.strava-route-overlay .strava-route-note {
+.activity-renamer-overlay .activity-renamer-panel > h4:first-of-type { margin-top: 0; }
+.activity-renamer-overlay .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
     color: var(--color-extendedneutraln3);
     font-size: 12px;
 }
-.strava-route-overlay .strava-route-dialog-button {
+.activity-renamer-overlay .activity-renamer-dialog-button {
     flex: 0 0 auto;
     padding: var(--space-3xs) var(--space-2xs);
     color: var(--color-extendedneutraln1);
@@ -166,13 +166,13 @@
     border-radius: var(--border-radius-sm);
     cursor: pointer;
 }
-.strava-route-overlay .strava-route-dialog-button--primary {
+.activity-renamer-overlay .activity-renamer-dialog-button--primary {
     color: var(--color-corewhite);
     background-color: var(--color-coreo3);
     border-color: var(--color-coreo3);
 }
-.strava-route-overlay .strava-route-dialog-button[disabled] { opacity: 0.5; cursor: default; }
-.strava-route-overlay .strava-route-field {
+.activity-renamer-overlay .activity-renamer-dialog-button[disabled] { opacity: 0.5; cursor: default; }
+.activity-renamer-overlay .activity-renamer-field {
     flex: 1 1 auto;
     min-width: 0;
     padding: var(--space-2xs) var(--space-xs);
@@ -181,52 +181,52 @@
     border: var(--border-width-thin) solid var(--color-extendedneutraln5);
     border-radius: var(--border-radius-sm);
 }
-.strava-route-overlay .strava-route-field--narrow { flex: 0 0 130px; }
-.strava-route-overlay .strava-route-form {
+.activity-renamer-overlay .activity-renamer-field--narrow { flex: 0 0 130px; }
+.activity-renamer-overlay .activity-renamer-form {
     display: flex;
     align-items: center;
     gap: var(--space-2xs);
 }
-.strava-route-overlay .strava-route-status {
+.activity-renamer-overlay .activity-renamer-status {
     min-height: 18px;
     margin-top: var(--space-4xs);
     color: var(--color-extendedneutraln3);
     font-size: 12px;
 }
-.strava-route-overlay .strava-route-status--error { color: var(--color-extendedredr3); }
-.strava-route-overlay .strava-route-row {
+.activity-renamer-overlay .activity-renamer-status--error { color: var(--color-extendedredr3); }
+.activity-renamer-overlay .activity-renamer-row {
     display: flex;
     align-items: center;
     gap: var(--space-2xs);
     padding: var(--space-2xs) 0;
     border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--color-extendedneutraln6);
 }
-.strava-route-overlay .strava-route-row-text { flex: 1 1 auto; }
-.strava-route-overlay .strava-route-row-title { font-weight: 600; }
-.strava-route-overlay .strava-route-row-details {
+.activity-renamer-overlay .activity-renamer-row-text { flex: 1 1 auto; }
+.activity-renamer-overlay .activity-renamer-row-title { font-weight: 600; }
+.activity-renamer-overlay .activity-renamer-row-details {
     margin-top: var(--space-4xs);
     color: var(--color-extendedneutraln3);
     font-size: 12px;
     overflow-wrap: anywhere;
 }
-.strava-route-overlay .strava-route-row-actions { display: flex; gap: var(--space-3xs); }
-.strava-route-overlay .strava-route-editor {
+.activity-renamer-overlay .activity-renamer-row-actions { display: flex; gap: var(--space-3xs); }
+.activity-renamer-overlay .activity-renamer-editor {
     margin: 0 0 var(--space-sm);
     padding: var(--space-xs);
     background: var(--color-extendedneutraln7);
     border: var(--border-width-thin) solid var(--color-coreo3);
     border-radius: var(--border-radius-md);
 }
-.strava-route-overlay .strava-route-editor h4 { margin: 0 0 var(--space-3xs); }
+.activity-renamer-overlay .activity-renamer-editor h4 { margin: 0 0 var(--space-3xs); }
 /* The name is edited as the sentence it is: one chip per part, in order. */
-.strava-route-overlay .strava-route-chips {
+.activity-renamer-overlay .activity-renamer-chips {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-3xs);
     margin: var(--space-2xs) 0;
 }
-.strava-route-overlay .strava-route-chip {
+.activity-renamer-overlay .activity-renamer-chip {
     display: inline-flex;
     align-items: stretch;
     background: var(--color-extendedneutraln7);
@@ -234,22 +234,22 @@
     border-radius: var(--border-radius-sm);
     overflow: hidden;
 }
-.strava-route-overlay .strava-route-chip button {
+.activity-renamer-overlay .activity-renamer-chip button {
     padding: var(--space-3xs) var(--space-2xs);
     color: var(--color-extendedneutraln1);
     background: none;
     border: none;
     cursor: pointer;
 }
-.strava-route-overlay .strava-route-chip-name { font-weight: 600; }
-.strava-route-overlay .strava-route-chip button:hover { background: var(--color-extendedneutraln6); }
-.strava-route-overlay .strava-route-chip-drop {
+.activity-renamer-overlay .activity-renamer-chip-name { font-weight: 600; }
+.activity-renamer-overlay .activity-renamer-chip button:hover { background: var(--color-extendedneutraln6); }
+.activity-renamer-overlay .activity-renamer-chip-drop {
     padding-left: var(--space-3xs);
     color: var(--color-extendedneutraln3);
     border-left: var(--border-width-thin) solid var(--color-extendedneutraln5);
 }
-.strava-route-overlay .strava-route-chip-drop:hover { color: var(--color-extendedredr3); }
-.strava-route-overlay .strava-route-preview-value {
+.activity-renamer-overlay .activity-renamer-chip-drop:hover { color: var(--color-extendedredr3); }
+.activity-renamer-overlay .activity-renamer-preview-value {
     margin: 0 0 var(--space-sm);
     padding-left: var(--space-2xs);
     color: var(--color-extendedneutraln3);
@@ -257,8 +257,8 @@
     font-size: 12px;
     overflow-wrap: anywhere;
 }
-.strava-route-overlay .strava-route-preview-value--empty { font-style: italic; }
-.strava-route-overlay .strava-route-backup {
+.activity-renamer-overlay .activity-renamer-preview-value--empty { font-style: italic; }
+.activity-renamer-overlay .activity-renamer-backup {
     width: 100%;
     box-sizing: border-box;
     padding: var(--space-2xs) var(--space-xs);
@@ -269,7 +269,7 @@
     font-family: monospace;
     font-size: 12px;
 }
-.strava-route-overlay .strava-route-attribution {
+.activity-renamer-overlay .activity-renamer-attribution {
     margin: var(--space-3xs) 0 var(--space-sm);
     color: var(--color-extendedneutraln4);
     font-size: 11px;
@@ -294,10 +294,10 @@
         (document.head || document.documentElement).append(style);
     }
 
-    const BUTTON_ID = 'strava-route-rename-btn';
-    const ADJUST_BUTTON_ID = 'strava-route-adjust-btn';
-    const NAME_DIALOG_ID = 'strava-route-name-dialog';
-    const LOG_PREFIX = '[Strava Renamer]';
+    const BUTTON_ID = 'activity-renamer-rename-btn';
+    const ADJUST_BUTTON_ID = 'activity-renamer-adjust-btn';
+    const NAME_DIALOG_ID = 'activity-renamer-name-dialog';
+    const LOG_PREFIX = '[Activity Renamer]';
     const TRANSIENT_OVERPASS_STATUSES = new Set([429, 502, 503, 504]);
 
     // The OSM place ranks worth naming a route after: anything smaller is a
@@ -456,9 +456,9 @@
     // through. Renaming a key orphans what is under the old one, so the old one
     // is cleared instead of left to sit in the profile for good.
     const RETIRED_STORAGE_KEYS = [
-        'strava_route_favorites_v1',
-        'strava_route_pinned_names_v1',
-        'strava_route_kept_names_v1',
+        'activity_renamer_favorites_v1',
+        'activity_renamer_pinned_names_v1',
+        'activity_renamer_kept_names_v1',
     ];
 
     function forgetRetiredSettings() {
@@ -1312,7 +1312,7 @@
     }
 
     // Nominatim address fields are used only to suggest a readable default
-    // when the user searches for a place of their own. Route names come from OSM
+    // when the user searches for a place of their own. Activity names come from OSM
     // place nodes, never from reverse geocoding.
     const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
     const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
@@ -1812,7 +1812,7 @@
         }
     }
 
-    function routeNamesFromPassages(passages, track, preferences, shouldLog = false) {
+    function activityNamesFromPassages(passages, track, preferences, shouldLog = false) {
         const { events, suppressed } = routeEvents(passages, track, preferences, shouldLog);
         const runs = mergeAdjacentEvents(events);
         const compacted = compactRouteRuns(runs, track);
@@ -1822,7 +1822,7 @@
 
     // Settlement and road visits are already ordered by the closest GPX point.
     // Adjacent duplicates merge immediately; a later revisit remains visible.
-    function routePlaceNames(passages, track) {
+    function buildActivityName(passages, track) {
         const placePassages = passages.filter(passage => passage.featureKind === 'place');
         for (const passage of placePassages) {
             log(`Nearby place ${rangeLabel(passage)}: ${passage.baseName}`
@@ -1834,7 +1834,7 @@
         }
 
         return {
-            names: routeNamesFromPassages(passages, track, namingPreferences(), true),
+            names: activityNamesFromPassages(passages, track, namingPreferences(), true),
             passages,
         };
     }
@@ -1923,9 +1923,9 @@
     }
 
     // The names the current settings produce for the analyzed route.
-    function currentRouteNames() {
+    function currentActivityNames() {
         if (!lastRouteAnalysis || lastRouteAnalysis.activityId !== getActivityId()) return null;
-        return routeNamesFromPassages(
+        return activityNamesFromPassages(
             lastRouteAnalysis.passages,
             lastRouteAnalysis.track,
             namingPreferences(),
@@ -1936,7 +1936,7 @@
     // visible immediately — including on the button, which counts the changes
     // this ride carries.
     function refreshActivityName() {
-        const names = currentRouteNames();
+        const names = currentActivityNames();
         if (names && setActivityName(names)) log(`Name updated: ${names.join(' - ')}`);
         updateAdjustButton();
     }
@@ -1989,8 +1989,8 @@
         try {
             await action();
         } catch (error) {
-            console.error(`${LOG_PREFIX} Route names error:`, error);
-            alert(`Route names error:\n${errorMessage(error)}`);
+            console.error(`${LOG_PREFIX} error:`, error);
+            alert(`${LOG_PREFIX} error:\n${errorMessage(error)}`);
         }
     }
 
@@ -2004,13 +2004,13 @@
     function createDialogButton(text, primary = false) {
         return createElement(
             'button',
-            `strava-route-dialog-button${primary ? ' strava-route-dialog-button--primary' : ''}`,
+            `activity-renamer-dialog-button${primary ? ' activity-renamer-dialog-button--primary' : ''}`,
             { type: 'button', textContent: text },
         );
     }
 
     function createDialogInput(properties = {}) {
-        return createElement('input', 'strava-route-field', { type: 'text', ...properties });
+        return createElement('input', 'activity-renamer-field', { type: 'text', ...properties });
     }
 
     function createSectionTitle(text) {
@@ -2018,7 +2018,7 @@
     }
 
     function createDialogNote(text) {
-        return createElement('p', 'strava-route-note', { textContent: text });
+        return createElement('p', 'activity-renamer-note', { textContent: text });
     }
 
     // Every list in the dialog reads the same way: a counted title, one line of
@@ -2033,14 +2033,14 @@
     }
 
     function appendDialogRow(container, title, details, actions) {
-        const row = createElement('div', 'strava-route-row');
-        const text = createElement('div', 'strava-route-row-text');
+        const row = createElement('div', 'activity-renamer-row');
+        const text = createElement('div', 'activity-renamer-row-text');
         text.append(
-            createElement('div', 'strava-route-row-title', { textContent: title }),
-            createElement('div', 'strava-route-row-details', { textContent: details }),
+            createElement('div', 'activity-renamer-row-title', { textContent: title }),
+            createElement('div', 'activity-renamer-row-details', { textContent: details }),
         );
 
-        const controls = createElement('div', 'strava-route-row-actions');
+        const controls = createElement('div', 'activity-renamer-row-actions');
         controls.append(...actions);
         row.append(text, controls);
         container.append(row);
@@ -2053,12 +2053,12 @@
         const editing = state.editing;
         if (!editing) return;
         const target = editing.existing || editing.passage;
-        const section = createElement('div', 'strava-route-editor');
+        const section = createElement('div', 'activity-renamer-editor');
         const title = createSectionTitle(
             editing.existing ? 'Rename this place' : 'Name this place');
 
         const nameInput = createDialogInput({
-            id: 'strava-route-place-name-input',
+            id: 'activity-renamer-place-name-input',
             value: state.editing.name,
             placeholder: 'Name to use in the title',
             maxLength: CONFIG.maxPlaceNameLength,
@@ -2068,8 +2068,8 @@
         });
 
         const radiusInput = createDialogInput({
-            id: 'strava-route-place-radius-input',
-            className: 'strava-route-field strava-route-field--narrow',
+            id: 'activity-renamer-place-radius-input',
+            className: 'activity-renamer-field activity-renamer-field--narrow',
             value: state.editing.radiusM,
             placeholder: `Radius ${CONFIG.savedPlaceRadiusMinM}–${CONFIG.savedPlaceRadiusMaxM} m`,
         });
@@ -2084,7 +2084,7 @@
             render();
         });
 
-        const form = createElement('form', 'strava-route-form');
+        const form = createElement('form', 'activity-renamer-form');
         form.append(nameInput, radiusInput, saveButton, cancelButton);
         saveButton.type = 'submit';
         form.addEventListener('submit', event => {
@@ -2120,7 +2120,7 @@
     function createStatusLine(text, isError = false) {
         const status = createElement(
             'div',
-            `strava-route-status${isError ? ' strava-route-status--error' : ''}`,
+            `activity-renamer-status${isError ? ' activity-renamer-status--error' : ''}`,
             { textContent: text },
         );
         status.setAttribute('aria-live', 'polite');
@@ -2163,10 +2163,10 @@
     // landmark row to start from, so it is searched for by address.
     function appendAddressSearch(panel, state, render) {
         const note = createDialogNote('Add a place by address:');
-        const form = createElement('form', 'strava-route-form');
+        const form = createElement('form', 'activity-renamer-form');
 
         const input = createDialogInput({
-            id: 'strava-route-address-input',
+            id: 'activity-renamer-address-input',
             value: state.search.query,
             placeholder: 'Street, house number, city',
             autocomplete: 'street-address',
@@ -2197,7 +2197,7 @@
             void runDialogAction(() => runAddressSearch(state, render));
         });
 
-        const attribution = createElement('div', 'strava-route-attribution');
+        const attribution = createElement('div', 'activity-renamer-attribution');
         attribution.append('Search by Nominatim · © ');
         const attributionLink = document.createElement('a');
         attributionLink.href = 'https://www.openstreetmap.org/copyright';
@@ -2249,8 +2249,8 @@
 
         const note = createDialogNote('Copy this somewhere safe, or paste a backup and import it.');
 
-        const textarea = createElement('textarea', 'strava-route-backup', {
-            id: 'strava-route-backup-input',
+        const textarea = createElement('textarea', 'activity-renamer-backup', {
+            id: 'activity-renamer-backup-input',
             rows: 5,
             spellcheck: false,
             value: state.backup.text ?? JSON.stringify(backupPayload(), null, 2),
@@ -2285,7 +2285,7 @@
             render();
         }));
 
-        const controls = createElement('div', 'strava-route-row-actions');
+        const controls = createElement('div', 'activity-renamer-row-actions');
         controls.append(copyButton, importButton);
 
         panel.append(title, note, textarea, controls, status);
@@ -2307,10 +2307,10 @@
     function openNameDialog() {
         document.getElementById(NAME_DIALOG_ID)?.remove();
 
-        const overlay = createElement('div', 'strava-route-overlay', {
+        const overlay = createElement('div', 'activity-renamer-overlay', {
             id: NAME_DIALOG_ID,
         });
-        const panel = createElement('div', 'strava-route-panel');
+        const panel = createElement('div', 'activity-renamer-panel');
 
         const close = () => {
             document.removeEventListener('keydown', onKeyDown);
@@ -2348,11 +2348,11 @@
     }
 
     function appendDialogHeader(panel, close) {
-        const header = createElement('div', 'strava-route-header');
+        const header = createElement('div', 'activity-renamer-header');
         const closeButton = createDialogButton('Close');
         closeButton.addEventListener('click', close);
         header.append(
-            createElement('h3', '', { textContent: 'Route names' }),
+            createElement('h3', '', { textContent: 'Activity Renamer' }),
             closeButton,
         );
         panel.append(header);
@@ -2373,7 +2373,7 @@
         for (const landmark of landmarks) {
             if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
         }
-        return { names: currentRouteNames() || [], landmarks, byName, savedPlaces };
+        return { names: currentActivityNames() || [], landmarks, byName, savedPlaces };
     }
 
     // One place builds the editor state, so a chip, a landmark, a saved place
@@ -2412,7 +2412,7 @@
         if (view.names.length === 0) {
             panel.append(createDialogNote('Nothing is in the name. Add a landmark below.'));
         } else {
-            const chips = createElement('div', 'strava-route-chips');
+            const chips = createElement('div', 'activity-renamer-chips');
             for (const name of view.names) {
                 chips.append(createNameChip(name, view, state, render));
             }
@@ -2421,9 +2421,9 @@
 
         panel.append(createElement(
             'p',
-            `strava-route-preview-value${view.names.length ? '' : ' strava-route-preview-value--empty'}`,
+            `activity-renamer-preview-value${view.names.length ? '' : ' activity-renamer-preview-value--empty'}`,
             {
-                id: 'strava-route-name-preview',
+                id: 'activity-renamer-name-preview',
                 textContent: view.names.length
                     ? fitNameLength(view.names)
                     : 'The title field is left alone while the name is empty.',
@@ -2433,7 +2433,7 @@
     }
 
     function createNameChip(name, view, state, render) {
-        const chip = createElement('div', 'strava-route-chip');
+        const chip = createElement('div', 'activity-renamer-chip');
         const landmark = view.byName.get(name);
         // A saved place can reach the name through a full-track visit that no
         // passage covers, so the chip falls back to matching it by name.
@@ -2441,7 +2441,7 @@
             || view.savedPlaces.find(saved => saved.name === name)
             || null;
 
-        const renameButton = createElement('button', 'strava-route-chip-name', {
+        const renameButton = createElement('button', 'activity-renamer-chip-name', {
             type: 'button',
             textContent: name,
             title: savedPlace || landmark
@@ -2455,7 +2455,7 @@
             anchor: NAME_ANCHOR,
         }));
 
-        const dropButton = createElement('button', 'strava-route-chip-drop', {
+        const dropButton = createElement('button', 'activity-renamer-chip-drop', {
             type: 'button',
             textContent: '✕',
             title: `Take ${name} out of this ride’s name`,
@@ -2617,16 +2617,16 @@
                 + (routeFeatures.cached ? ' (cached)' : ` from ${routeFeatures.placeCount} OSM places`
                     + ` and ${routeFeatures.roadCount} named roads`));
 
-            const route = routePlaceNames(routeFeatures.passages, track);
-            lastRouteAnalysis = { activityId, track, passages: route.passages };
-            if (route.names.length === 0) {
+            const activityName = buildActivityName(routeFeatures.passages, track);
+            lastRouteAnalysis = { activityId, track, passages: activityName.passages };
+            if (activityName.names.length === 0) {
                 throw new Error('The route has no named OSM place, road, or savedPlace radius.');
             }
 
             // Logged after the fact: an over-long narrative reaches the field
             // shortened, and the log should show what was actually written.
-            setActivityName(route.names);
-            log(`Name: ${fitNameLength(route.names)}`);
+            setActivityName(activityName.names);
+            log(`Name: ${fitNameLength(activityName.names)}`);
             setButtonState(button, STRINGS.done, 'success');
             await sleep(CONFIG.successStateMs);
         } catch (error) {
@@ -2648,7 +2648,7 @@
 
         installStyles();
 
-        const button = createElement('button', 'strava-route-button', {
+        const button = createElement('button', 'activity-renamer-button', {
             id: BUTTON_ID,
             type: 'button',
             title: 'Generate name from GPS track',
@@ -2661,7 +2661,7 @@
 
         const adjustButton = createElement(
             'button',
-            'strava-route-button strava-route-button--secondary',
+            'activity-renamer-button activity-renamer-button--secondary',
             { id: ADJUST_BUTTON_ID, type: 'button', textContent: STRINGS.adjust },
         );
         adjustButton.addEventListener('click', event => {
@@ -2669,7 +2669,7 @@
             runDialogAction(openNameDialog);
         });
 
-        const wrapper = createElement('div', 'strava-route-controls');
+        const wrapper = createElement('div', 'activity-renamer-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
         wrapper.append(titleLabel, button, adjustButton);
         runDialogAction(updateAdjustButton);

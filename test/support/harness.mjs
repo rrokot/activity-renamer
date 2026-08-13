@@ -1,4 +1,4 @@
-// Loads strava-route-renamer.user.js into a sandboxed VM with a stubbed
+// Loads activity-renamer.user.js into a sandboxed VM with a stubbed
 // browser, so the naming pipeline can be exercised end to end (click the
 // button, read the filled-in activity name) without a browser, a Strava login
 // or network access.
@@ -21,7 +21,7 @@ export const fixturesDir = join(testDir, 'fixtures');
 // USERSCRIPT_PATH lets a benchmark run the same scenario against another
 // revision of the script.
 const userscriptPath = process.env.USERSCRIPT_PATH
-    || join(projectDir, 'strava-route-renamer.user.js');
+    || join(projectDir, 'activity-renamer.user.js');
 
 const EARTH_RADIUS_KM = 6371;
 
@@ -277,7 +277,7 @@ export function loadRenamer(options = {}) {
 
     FakeMutationObserver.instances.length = 0;
     vm.runInNewContext(readFileSync(userscriptPath, 'utf8'), sandbox, {
-        filename: 'strava-route-renamer.user.js',
+        filename: 'activity-renamer.user.js',
     });
 
     const settle = async (maxTurns = 5000) => {
@@ -308,13 +308,13 @@ export function loadRenamer(options = {}) {
         settle,
         byId,
         get button() {
-            return byId('strava-route-rename-btn');
+            return byId('activity-renamer-rename-btn');
         },
         get adjustButton() {
-            return byId('strava-route-adjust-btn');
+            return byId('activity-renamer-adjust-btn');
         },
         get dialog() {
-            return byId('strava-route-name-dialog');
+            return byId('activity-renamer-name-dialog');
         },
         get name() {
             return input.value;
@@ -340,7 +340,7 @@ export function loadScenario(fixtureName, overrides = {}) {
             gpx: toGpx(fixture.points),
             overpassResponses: [jsonResponse({ elements: overpassElements(fixture) })],
             storage: fixture.savedPlaces
-                ? { strava_route_saved_places_v1: JSON.stringify(fixture.savedPlaces) }
+                ? { activity_renamer_saved_places_v1: JSON.stringify(fixture.savedPlaces) }
                 : {},
             ...overrides,
         }),

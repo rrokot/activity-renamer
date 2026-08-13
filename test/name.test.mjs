@@ -106,7 +106,7 @@ test('stays fast when Overpass returns hundreds of roads', async () => {
 test('a saved place renames the settlement it covers', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         storage: {
-            strava_route_saved_places_v1: JSON.stringify([{
+            activity_renamer_saved_places_v1: JSON.stringify([{
                 id: 'place_burg',
                 name: 'Gurkenpause',
                 lat: 51.85,
@@ -125,7 +125,7 @@ test('a saved place renames the settlement it covers', async () => {
 test('a saved place away from any settlement joins the narrative', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         storage: {
-            strava_route_saved_places_v1: JSON.stringify([{
+            activity_renamer_saved_places_v1: JSON.stringify([{
                 id: 'place_rast',
                 name: 'Kahnfährhafen',
                 lat: 51.83,

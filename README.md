@@ -1,4 +1,4 @@
-# Strava Route Renamer
+# Activity Renamer
 
 A Tampermonkey userscript that names a Strava activity after the places the
 route actually passes, read like a travel narrative:
@@ -10,7 +10,7 @@ roads along the track, and fills in the title field on the activity edit page.
 
 ## Install
 
-Open `strava-route-renamer.user.js` in Tampermonkey. The script asks for
+Open `activity-renamer.user.js` in Tampermonkey. The script asks for
 `GM_xmlhttpRequest` (so Strava's Content-Security-Policy cannot block Overpass
 or Nominatim) and `GM_getValue`/`GM_setValue` (so the saved places survive
 clearing the site data). Without those grants it falls back to `fetch` and
@@ -136,6 +136,6 @@ different corners than the full-resolution GPX the browser uses.
 index was measured against the previous full scan:
 
 ```sh
-git show HEAD:strava-route-renamer.user.js > /tmp/old.js
+git show HEAD:activity-renamer.user.js > /tmp/old.js
 USERSCRIPT_PATH=/tmp/old.js node your-benchmark.mjs
 ```

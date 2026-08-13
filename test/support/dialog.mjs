@@ -61,13 +61,13 @@ export function sectionTitles(renamer) {
 // The name is edited as chips: the label renames the place, the ✕ takes it out.
 export function chipNames(renamer) {
     return renamer.dialog.querySelectorAll('button')
-        .filter(button => button.className === 'strava-route-chip-name')
+        .filter(button => button.className === 'activity-renamer-chip-name')
         .map(button => button.textContent);
 }
 
 export function nameChip(renamer, name) {
     const rename = renamer.dialog.querySelectorAll('button')
-        .find(button => button.className === 'strava-route-chip-name'
+        .find(button => button.className === 'activity-renamer-chip-name'
             && button.textContent === name);
     if (!rename) {
         throw new Error(`No "${name}" chip in the name. Present: ${chipNames(renamer).join(', ')}`);
@@ -85,5 +85,5 @@ export function passedRowButton(renamer, label, place) {
 }
 
 export function namePreview(renamer) {
-    return renamer.dialog.querySelector('#strava-route-name-preview')?.textContent ?? null;
+    return renamer.dialog.querySelector('#activity-renamer-name-preview')?.textContent ?? null;
 }

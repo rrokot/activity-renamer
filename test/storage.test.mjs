@@ -6,7 +6,7 @@ import {
     loadScenario,
 } from './support/harness.mjs';
 
-const SAVED_PLACES_KEY = 'strava_route_saved_places_v1';
+const SAVED_PLACES_KEY = 'activity_renamer_saved_places_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -58,15 +58,15 @@ test('keeps working without the storage grants', async () => {
 test('clears the keys earlier versions wrote', () => {
     const renamer = loadRenamer({
         userscriptManager: true,
-        storage: { strava_route_favorites_v1: JSON.stringify([burgPlace]) },
+        storage: { activity_renamer_favorites_v1: JSON.stringify([burgPlace]) },
         userscriptStorage: {
-            strava_route_pinned_names_v1: JSON.stringify(['Guhrow']),
-            strava_route_kept_names_v1: JSON.stringify([{ activityId: '1', names: ['Burg'] }]),
+            activity_renamer_pinned_names_v1: JSON.stringify(['Guhrow']),
+            activity_renamer_kept_names_v1: JSON.stringify([{ activityId: '1', names: ['Burg'] }]),
         },
     });
 
-    assert.equal(renamer.localStorage.getItem('strava_route_favorites_v1'), null);
-    assert.equal(renamer.userscriptStore.has('strava_route_pinned_names_v1'), false);
-    assert.equal(renamer.userscriptStore.has('strava_route_kept_names_v1'), false);
+    assert.equal(renamer.localStorage.getItem('activity_renamer_favorites_v1'), null);
+    assert.equal(renamer.userscriptStore.has('activity_renamer_pinned_names_v1'), false);
+    assert.equal(renamer.userscriptStore.has('activity_renamer_kept_names_v1'), false);
     assert.ok(renamer.logs.some(line => line.includes('Cleared retired settings')));
 });

@@ -10,16 +10,16 @@ test('adopts its stylesheet through the CSSOM when it can', () => {
     const renamer = loadRenamer({ constructedStylesheets: true });
 
     assert.equal(renamer.document.adoptedStyleSheets.length, 1);
-    assert.match(renamer.document.adoptedStyleSheets[0].cssText, /\.strava-route-panel/);
-    assert.equal(renamer.byId('strava-route-styles'), null, 'no <style> tag is needed');
+    assert.match(renamer.document.adoptedStyleSheets[0].cssText, /\.activity-renamer-panel/);
+    assert.equal(renamer.byId('activity-renamer-styles'), null, 'no <style> tag is needed');
 });
 
 test('falls back to a style tag on engines without constructed sheets', () => {
     const renamer = loadRenamer();
-    const style = renamer.byId('strava-route-styles');
+    const style = renamer.byId('activity-renamer-styles');
 
     assert.ok(style, 'the stylesheet is installed');
-    assert.match(style.textContent, /\.strava-route-panel/);
+    assert.match(style.textContent, /\.activity-renamer-panel/);
     assert.equal(style.parentNode, renamer.document.head);
 });
 
