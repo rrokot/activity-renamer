@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.27
+// @version      0.1.28
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -2477,16 +2477,21 @@
         panel.append(note, controls, status, results, attribution);
     }
 
-    const COLLECTION_TAB_IDS = ['places', 'roads', 'favorites', 'excluded'];
+    // An id names the tab's icon in SECTION_ICON_PATHS as well as the tab and
+    // the panel it controls, and this order is the one the arrow keys walk.
+    const COLLECTION_TABS = [
+        { id: 'places', label: 'Other places', appendContents: appendOtherPlaceContents },
+        { id: 'roads', label: 'Other roads', appendContents: appendOtherRoadContents },
+        { id: 'favorites', label: 'Favorites', appendContents: appendFavoriteContents },
+        { id: 'excluded', label: 'Excluded', appendContents: appendBlockedNameContents },
+    ];
 
-    function appendCollectionTab(panel, state, render, tablist, {
-        id, label, icon, appendContents,
-    }) {
+    function appendCollectionTab(panel, state, render, tablist, { id, label, appendContents }) {
         const selected = state.activeCollection === id;
         const tab = createPanelButton(label);
         tab.id = `activity-renamer-${id}-tab`;
         tab.className = 'activity-renamer-section-tab';
-        decorateIconButton(tab, icon, label);
+        decorateIconButton(tab, id, label);
         tab.setAttribute('role', 'tab');
         tab.setAttribute('aria-selected', String(selected));
         tab.setAttribute('aria-controls', `activity-renamer-${id}`);
@@ -2497,17 +2502,17 @@
             render(tab.id);
         });
         tab.addEventListener('keydown', event => {
-            const currentIndex = COLLECTION_TAB_IDS.indexOf(id);
+            const currentIndex = COLLECTION_TABS.findIndex(entry => entry.id === id);
             const nextIndex = event.key === 'ArrowRight'
-                ? (currentIndex + 1) % COLLECTION_TAB_IDS.length
+                ? (currentIndex + 1) % COLLECTION_TABS.length
                 : event.key === 'ArrowLeft'
-                    ? (currentIndex - 1 + COLLECTION_TAB_IDS.length) % COLLECTION_TAB_IDS.length
+                    ? (currentIndex - 1 + COLLECTION_TABS.length) % COLLECTION_TABS.length
                     : event.key === 'Home' ? 0
-                        : event.key === 'End' ? COLLECTION_TAB_IDS.length - 1
+                        : event.key === 'End' ? COLLECTION_TABS.length - 1
                             : -1;
             if (nextIndex < 0) return;
             event.preventDefault();
-            state.activeCollection = COLLECTION_TAB_IDS[nextIndex];
+            state.activeCollection = COLLECTION_TABS[nextIndex].id;
             render(`activity-renamer-${state.activeCollection}-tab`);
         });
         tablist.append(tab);
@@ -2524,34 +2529,15 @@
         panel.append(container);
     }
 
-    function appendFavorites(panel, state, render, tablist) {
-        appendCollectionTab(panel, state, render, tablist, {
-            id: 'favorites',
-            label: 'Favorites',
-            icon: 'favorites',
-            appendContents: appendFavoriteContents,
-        });
-    }
-
-    function appendExcluded(panel, state, render, tablist) {
-        appendCollectionTab(panel, state, render, tablist, {
-            id: 'excluded',
-            label: 'Excluded',
-            icon: 'excluded',
-            appendContents: appendBlockedNameContents,
-        });
-    }
-
     // The four collections form one tab set, so exactly one is always visible.
     function appendCollectionSections(panel, state, render) {
         const tablist = createElement('div', 'activity-renamer-section-tabs');
         tablist.setAttribute('role', 'tablist');
         tablist.setAttribute('aria-label', 'Landmark collections');
         panel.append(tablist);
-        appendOtherPlaces(panel, state, render, tablist);
-        appendOtherRoads(panel, state, render, tablist);
-        appendFavorites(panel, state, render, tablist);
-        appendExcluded(panel, state, render, tablist);
+        for (const entry of COLLECTION_TABS) {
+            appendCollectionTab(panel, state, render, tablist, entry);
+        }
     }
 
     const PANEL_SECTIONS = [appendThisName, appendCollectionSections];
@@ -2965,15 +2951,6 @@
         });
     }
 
-    function appendOtherPlaces(panel, state, render, tablist) {
-        appendCollectionTab(panel, state, render, tablist, {
-            id: 'places',
-            label: 'Other places',
-            icon: 'places',
-            appendContents: appendOtherPlaceContents,
-        });
-    }
-
     function uniqueLandmarksByName(landmarks) {
         const byName = new Map();
         for (const landmark of landmarks) {
@@ -2989,25 +2966,15 @@
         const inName = new Set(view?.names || []);
         const roads = uniqueLandmarksByName((view?.landmarks || []).filter(landmark =>
             landmark.passage.featureKind === 'road' && !inName.has(landmark.name)));
-        if (roads.length === 0) {
-            panel.append(createPanelNote(view
-                ? 'No other named roads were passed.'
-                : 'Build the name to load nearby roads.'));
-            return;
-        }
         const blocked = nameKeys(loadBlockedNames());
-        for (const road of roads) {
-            appendLandmarkRow(panel, road, blocked, state, render);
-            appendEditorAt(panel, state, render, road.passage);
-        }
-    }
-
-    function appendOtherRoads(panel, state, render, tablist) {
-        appendCollectionTab(panel, state, render, tablist, {
-            id: 'roads',
-            label: 'Other roads',
-            icon: 'roads',
-            appendContents: appendOtherRoadContents,
+        appendListContents(panel, roads, {
+            empty: view
+                ? 'No other named roads were passed.'
+                : 'Build the name to load nearby roads.',
+            row: road => {
+                appendLandmarkRow(panel, road, blocked, state, render);
+                appendEditorAt(panel, state, render, road.passage);
+            },
         });
     }
 
