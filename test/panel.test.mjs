@@ -383,9 +383,9 @@ test('keeps roads in their own tab when settlements fill the name', async () => 
         .find(button => button.title.startsWith('Save a preferred name for'));
     const excludeAction = renamer.panel.querySelectorAll('button')
         .find(button => button.title.startsWith('Exclude '));
-    assert.ok(favoriteAction.className.includes('activity-renamer-neutral-button'));
-    assert.ok(renamer.panelToggleButton.className.includes('activity-renamer-neutral-button'),
-        'the panel chevron and Favorite actions share one neutral button style');
+    assert.ok(favoriteAction.className.includes('btn-default'));
+    assert.ok(renamer.panelToggleButton.className.includes('btn-default'),
+        'the panel chevron and Favorite actions share Strava\'s neutral button');
     assert.deepEqual(
         pathData(favoriteAction),
         pathData(panelButton(renamer, 'Favorites')),

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.22
+// @version      0.1.23
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -147,10 +147,13 @@
     background-color: var(--color-extendedredr3);
     border-color: var(--color-extendedredr3);
 }
+/* A square for one icon. Strava sizes btn-sm through its padding, so dropping
+   the padding means stating the height the padding used to imply. */
 .activity-renamer-button--toggle.activity-renamer-button--toggle {
     margin-left: var(--space-3xs);
     min-width: 32px;
     width: 32px;
+    height: 32px;
     padding: 0;
 }
 .activity-renamer-button--toggle .activity-renamer-chevron {
@@ -237,6 +240,7 @@
     justify-content: center;
     min-width: 32px;
     width: 32px;
+    height: 32px;
     padding: 0;
 }
 .activity-renamer-panel .activity-renamer-note {
@@ -2184,8 +2188,8 @@
         return createElement(
             'button',
             `activity-renamer-control activity-renamer-panel-button ${primary
-                ? `activity-renamer-primary-button ${STRAVA_CLASS.primaryButton}`
-                : `activity-renamer-neutral-button ${STRAVA_CLASS.neutralButton}`}`,
+                ? STRAVA_CLASS.primaryButton
+                : STRAVA_CLASS.neutralButton}`,
             { type: 'button', textContent: text },
         );
     }
@@ -3231,8 +3235,7 @@
 
         const button = createElement(
             'button',
-            `activity-renamer-control activity-renamer-button activity-renamer-primary-button ${
-                STRAVA_CLASS.primaryButton}`,
+            `activity-renamer-control activity-renamer-button ${STRAVA_CLASS.primaryButton}`,
             {
                 id: BUTTON_ID,
                 type: 'button',
@@ -3247,8 +3250,8 @@
 
         const panelToggleButton = createElement(
             'button',
-            'activity-renamer-control activity-renamer-button activity-renamer-neutral-button'
-                + ` activity-renamer-button--toggle ${STRAVA_CLASS.neutralButton}`,
+            'activity-renamer-control activity-renamer-button activity-renamer-button--toggle'
+                + ` ${STRAVA_CLASS.neutralButton}`,
             { id: PANEL_TOGGLE_BUTTON_ID, type: 'button' },
         );
         panelToggleButton.append(createStravaChevron());
