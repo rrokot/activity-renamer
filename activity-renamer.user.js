@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.25
+// @version      0.1.26
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -255,16 +255,8 @@
     align-items: center;
     gap: var(--space-2xs);
 }
-/* A browser drops the whole rule when it meets the other engine's selector, so
-   the two tracks cannot share one. They share the value instead. */
+/* The track and thumb are shaped for Blink alone, as the README asks for. */
 .activity-renamer-panel .activity-renamer-name-count-slider {
-    --activity-renamer-rail:
-        linear-gradient(
-            90deg,
-            transparent 0 var(--activity-renamer-slider-progress),
-            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
-        ),
-        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     appearance: none;
     flex: 1 1 auto;
     min-width: 0;
@@ -276,7 +268,13 @@
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-runnable-track {
     height: 4px;
-    background: var(--activity-renamer-rail);
+    background:
+        linear-gradient(
+            90deg,
+            transparent 0 var(--activity-renamer-slider-progress),
+            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
+        ),
+        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     border-radius: var(--border-radius-xs);
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-thumb {
@@ -284,20 +282,6 @@
     width: 16px;
     height: 28px;
     margin-top: -12px;
-    background: var(--color-corewhite);
-    border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
-    border-radius: var(--border-radius-xs);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
-}
-.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-track {
-    height: 4px;
-    background: var(--activity-renamer-rail);
-    border: 0;
-    border-radius: var(--border-radius-xs);
-}
-.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-thumb {
-    width: 16px;
-    height: 28px;
     background: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
     border-radius: var(--border-radius-xs);
@@ -735,6 +719,14 @@
             entries.push(entry);
         }
         writeSetting(STORAGE_KEY.rideOverrides, entries.slice(-CONFIG.rideHistory));
+    }
+
+    // Only the count moves; the kept places belong to the chips. A null count
+    // hands the activity back to automatic mode.
+    function storeRidePlaceCount(placeCount) {
+        const activityId = getActivityId();
+        if (!activityId) return;
+        saveRideOverride(activityId, { ...loadRideOverride(activityId), placeCount });
     }
 
     const withoutName = (names, name) =>
@@ -1657,6 +1649,21 @@
         return Math.abs(twiceArea) / 2;
     }
 
+    // The candidate scoring highest on the first measure that separates it from
+    // the leader. Scoring a candidate null passes it over.
+    function bestCandidate(candidateIndices, scoreOf, fallbackIndex = -1) {
+        let bestIndex = fallbackIndex;
+        let bestScores = null;
+        for (const index of candidateIndices) {
+            const scores = scoreOf(index);
+            if (!scores) continue;
+            if (bestScores && !scoresBetter(scores, bestScores)) continue;
+            bestScores = scores;
+            bestIndex = index;
+        }
+        return bestIndex;
+    }
+
     function fillCoverageSelection(runs, track, candidateIndices, selected, targetSize) {
         if (selected.size >= targetSize || candidateIndices.length === 0) return selected;
         const projection = trackProjection(track);
@@ -1670,25 +1677,19 @@
         // in the name, then the more important feature.
         while (selected.size < targetSize) {
             const selectedPoints = Array.from(selected, index => points.get(index));
-            let bestIndex = -1;
-            let bestScores = [-1, -1, -1];
-            for (const index of candidateIndices) {
-                if (selected.has(index)) continue;
+            const bestIndex = bestCandidate(candidateIndices, index => {
+                if (selected.has(index)) return null;
                 const point = points.get(index);
                 const nearestSelectedKm = selectedPoints.length === 0 ? 0 : Math.min(
                     ...selectedPoints.map(selectedPoint =>
                         planarDistanceKm(point, selectedPoint)),
                 );
-                const scores = [
+                return [
                     convexHullArea(selectedPoints.concat(point)),
                     nearestSelectedKm,
                     runPriority(runs[index]),
                 ];
-                if (scoresBetter(scores, bestScores)) {
-                    bestScores = scores;
-                    bestIndex = index;
-                }
-            }
+            });
             if (bestIndex < 0) break;
             selected.add(bestIndex);
         }
@@ -1705,20 +1706,13 @@
         const finish = projectPoint(
             projection, track.latitudes[lastIndex], track.longitudes[lastIndex]);
 
-        let bestIndex = candidateIndices[0];
-        let bestScores = [-1, -1];
-        for (const index of candidateIndices) {
+        return bestCandidate(candidateIndices, index => {
             const point = projectedRunPoint(runs[index], track, projection);
-            const scores = [
+            return [
                 Math.min(planarDistanceKm(point, start), planarDistanceKm(point, finish)),
                 runPriority(runs[index]),
             ];
-            if (scoresBetter(scores, bestScores)) {
-                bestScores = scores;
-                bestIndex = index;
-            }
-        }
-        return bestIndex;
+        }, candidateIndices[0]);
     }
 
     const indicesWhere = (items, predicate) =>
@@ -2258,6 +2252,14 @@
         return createElement('p', 'activity-renamer-note', { textContent: text });
     }
 
+    // What a field's aria-describedby points at once its value is refused.
+    function createFieldError(id, text) {
+        const note = createPanelNote(text);
+        note.className = 'activity-renamer-note activity-renamer-status--error';
+        note.id = id;
+        return note;
+    }
+
     function appendListContents(panel, items, { empty, row }) {
         if (items.length === 0) {
             panel.append(createPanelNote(empty));
@@ -2790,11 +2792,9 @@
         syncMode(loadRideOverride().placeCount === null);
 
         const applyValue = (rawValue, { allowReset, reportInvalid }) => {
-            const activityId = getActivityId();
-            const current = loadRideOverride(activityId);
             if (rawValue.trim() === '') {
                 if (!allowReset) return;
-                saveRideOverride(activityId, { ...current, placeCount: null });
+                storeRidePlaceCount(null);
                 state.countError = '';
                 syncMode(true);
                 refreshActivityName();
@@ -2809,7 +2809,7 @@
                 }
                 return;
             }
-            saveRideOverride(activityId, { ...current, placeCount: value });
+            storeRidePlaceCount(value);
             state.countError = '';
             syncMode(false);
             refreshActivityName();
@@ -2827,11 +2827,7 @@
             }
 
             writeSetting(STORAGE_KEY.autoPlaceSpacingKm, value);
-            const activityId = getActivityId();
-            if (activityId) {
-                const current = loadRideOverride(activityId);
-                saveRideOverride(activityId, { ...current, placeCount: null });
-            }
+            storeRidePlaceCount(null);
             state.countError = '';
             state.densityError = '';
             syncMode(true);
@@ -2880,17 +2876,9 @@
 
         controls.append(sliderLabel, slider, inputLabel, input, densityLabel, densityInput);
         section.append(controls);
-        if (state.countError) {
-            const note = createPanelNote(state.countError);
-            note.className = 'activity-renamer-note activity-renamer-status--error';
-            note.id = noteId;
-            section.append(note);
-        }
+        if (state.countError) section.append(createFieldError(noteId, state.countError));
         if (state.densityError) {
-            const note = createPanelNote(state.densityError);
-            note.className = 'activity-renamer-note activity-renamer-status--error';
-            note.id = densityNoteId;
-            section.append(note);
+            section.append(createFieldError(densityNoteId, state.densityError));
         }
         panel.append(section);
     }
