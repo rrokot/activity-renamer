@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.23
+// @version      0.1.24
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -83,10 +83,10 @@
     };
     const settings = new Map();
     // Strava's edit form still ships its own control kit, so the panel dresses
-    // its buttons and fields in it instead of imitating them. btn-sm is the
-    // 32px size the form uses for compact actions; input-sm is its matching
-    // field. Everything the page paints this way follows Strava's own changes,
-    // and the sheet below never has to describe a control at all.
+    // itself in it instead of imitating it. btn-sm is the 32px size the form
+    // uses for compact actions, input-sm is its matching field, and sr-only is
+    // the page's own way of leaving a label to assistive technology alone.
+    // Everything worn this way follows Strava's changes without being asked.
     const STRAVA_CLASS = {
         primaryButton: 'btn btn-primary btn-sm',
         neutralButton: 'btn btn-default btn-sm',
@@ -119,8 +119,10 @@
     --activity-renamer-rail-start: #f4f4f4;
     --activity-renamer-rail-rest: #f0f0f0;
 }
-/* Only what Strava's own button rules leave open: the size, colour, weight and
-   radius of a control all arrive with its classes. */
+/* Only what Strava's own button rules leave open. Colour, weight and radius
+   arrive with the classes; the doubled selector is here because the rules
+   below it answer to Strava's, and one specificity for all of them is easier
+   to follow than a different one per rule. */
 .activity-renamer-control.activity-renamer-control {
     box-sizing: border-box;
     align-items: center;
@@ -147,8 +149,8 @@
     background-color: var(--color-extendedredr3);
     border-color: var(--color-extendedredr3);
 }
-/* A square for one icon. Strava sizes btn-sm through its padding, so dropping
-   the padding means stating the height the padding used to imply. */
+/* The chevron is the same square as the panel's icon buttons, but it sits in
+   Strava's form rather than the panel, so it states the shape itself. */
 .activity-renamer-button--toggle.activity-renamer-button--toggle {
     margin-left: var(--space-3xs);
     min-width: 32px;
@@ -166,7 +168,8 @@
 .activity-renamer-button--toggle[aria-expanded="true"] .activity-renamer-chevron {
     transform: translateX(-2px) rotate(180deg);
 }
-.activity-renamer-button--toggle.activity-renamer-button--toggle[disabled] {
+.activity-renamer-button--toggle.activity-renamer-button--toggle[disabled],
+.activity-renamer-panel .activity-renamer-panel-button[disabled] {
     opacity: 0.5;
     cursor: default;
 }
@@ -195,22 +198,26 @@
     flex: 0 0 auto;
     width: 18px;
     height: 18px;
-    color: inherit;
     fill: none;
     stroke: currentColor;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 1.8;
 }
-.activity-renamer-panel .activity-renamer-section-tab {
+/* Every icon button in the panel is the same square, whether it opens a
+   collection or acts on a row. Strava sizes btn-sm through its padding, so
+   dropping that padding means stating the height the padding used to imply. */
+.activity-renamer-panel .activity-renamer-icon-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 32px;
     width: 32px;
-    min-height: 32px;
-    margin: 0;
+    height: 32px;
     padding: 0;
+}
+.activity-renamer-panel .activity-renamer-section-tab {
+    margin: 0;
     color: var(--activity-renamer-muted);
     background: none;
     border: none;
@@ -234,21 +241,11 @@
     width: 16px;
     height: 16px;
 }
-.activity-renamer-panel .activity-renamer-panel-button.activity-renamer-icon-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 32px;
-    width: 32px;
-    height: 32px;
-    padding: 0;
-}
 .activity-renamer-panel .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
     color: var(--activity-renamer-muted);
     font-size: 12px;
 }
-.activity-renamer-panel .activity-renamer-panel-button[disabled] { opacity: 0.5; cursor: default; }
 .activity-renamer-panel .activity-renamer-field {
     flex: 1 1 auto;
     min-width: 0;
@@ -268,7 +265,17 @@
     align-items: center;
     gap: var(--space-2xs);
 }
+/* A browser drops the whole rule when it meets a track or thumb selector it
+   does not know, so the two engines cannot share one. They share the values
+   instead: the rail is written once here and read by both. */
 .activity-renamer-panel .activity-renamer-name-count-slider {
+    --activity-renamer-rail:
+        linear-gradient(
+            90deg,
+            transparent 0 var(--activity-renamer-slider-progress),
+            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
+        ),
+        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     appearance: none;
     flex: 1 1 auto;
     min-width: 0;
@@ -280,14 +287,8 @@
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-runnable-track {
     height: 4px;
-    background:
-        linear-gradient(
-            90deg,
-            transparent 0 var(--activity-renamer-slider-progress),
-            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
-        ),
-        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
-    border-radius: 2px;
+    background: var(--activity-renamer-rail);
+    border-radius: var(--border-radius-xs);
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-thumb {
     appearance: none;
@@ -296,27 +297,21 @@
     margin-top: -12px;
     background: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
-    border-radius: 2px;
+    border-radius: var(--border-radius-xs);
     box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-track {
     height: 4px;
-    background:
-        linear-gradient(
-            90deg,
-            transparent 0 var(--activity-renamer-slider-progress),
-            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
-        ),
-        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
+    background: var(--activity-renamer-rail);
     border: 0;
-    border-radius: 2px;
+    border-radius: var(--border-radius-xs);
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-thumb {
     width: 16px;
     height: 28px;
     background: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
-    border-radius: 2px;
+    border-radius: var(--border-radius-xs);
     box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
 .activity-renamer-panel .activity-renamer-name-count .activity-renamer-note {
