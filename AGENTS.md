@@ -38,14 +38,13 @@ The panel has to read as part of the edit form, so it borrows rather than
 imitates. Three rules keep it there:
 
 - Dress controls in Strava's own classes through `STRAVA_CLASS`
-  (`btn btn-primary btn-sm`, `btn btn-default btn-sm`, `form-control input-sm`)
-  instead of writing a button or field skin. `STYLES` then owns layout, the
-  panel shell and the parts Strava has no class for.
-- `STYLES` repeats that skin inside `@layer activity-renamer-fallback` so the
-  panel survives the day those classes go. Layered rules lose to every
-  unlayered one, including the page's own `button` and `input` element rules —
-  so anything the fallback must win, such as the shape of a control, belongs
-  outside the layer at a value Strava already computes.
+  (`btn btn-primary btn-sm`, `btn btn-default btn-sm`, `form-control input-sm`,
+  `sr-only`) instead of writing a button or field skin. `STYLES` then owns
+  layout, the panel shell and the parts Strava has no class for.
+- Do not repeat what those classes already paint, not even as a fallback. The
+  script is tied to the editor's markup anyway, so a Strava rewrite means a
+  visibly broken panel and a fix, which beats a panel that keeps working while
+  drifting away from the form around it.
 - Take spacing, radii and brand colour from the design tokens on `:root`,
   without a `var()` fallback. The edit form itself predates those tokens and
   paints from an older palette that has none: `#dfdfe8` hairlines, `#6d6d78`

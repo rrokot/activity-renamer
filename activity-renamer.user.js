@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.21
+// @version      0.1.22
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -85,11 +85,13 @@
     // Strava's edit form still ships its own control kit, so the panel dresses
     // its buttons and fields in it instead of imitating them. btn-sm is the
     // 32px size the form uses for compact actions; input-sm is its matching
-    // field. Everything the page paints this way follows Strava's own changes.
+    // field. Everything the page paints this way follows Strava's own changes,
+    // and the sheet below never has to describe a control at all.
     const STRAVA_CLASS = {
         primaryButton: 'btn btn-primary btn-sm',
         neutralButton: 'btn btn-default btn-sm',
         field: 'form-control input-sm',
+        srOnly: 'sr-only',
     };
 
     // One stylesheet instead of a style object per element. It is adopted
@@ -98,11 +100,10 @@
     // sheets — the same reason the network calls go through the manager.
     //
     // The buttons and fields wear Strava's own control classes (STRAVA_CLASS
-    // above), so the page paints them and they keep following Strava. What is
-    // left here is layout, the panel shell, and the parts Strava has no class
-    // for. Their skin is repeated inside a cascade layer, which every unlayered
-    // rule outranks: Strava wins while its classes exist, and the panel is
-    // still readable on the day they go.
+    // above), so the page paints them. What is left here is layout, the panel
+    // shell, and the parts Strava has no class for. Nothing repeats a control's
+    // skin: the day those classes go, the panel looks broken and gets fixed
+    // rather than quietly drifting away from the form around it.
     //
     // Spacing, radii and the brand colours come from the design tokens Strava
     // declares on :root, used without a var() fallback so a renamed token drops
@@ -118,58 +119,13 @@
     --activity-renamer-rail-start: #f4f4f4;
     --activity-renamer-rail-rest: #f0f0f0;
 }
-@layer activity-renamer-fallback {
-    .activity-renamer-control {
-        min-height: 32px;
-        padding: 6px 12px;
-        border: var(--border-width-thin) solid transparent;
-        border-radius: var(--border-radius-sm);
-        transition: background-color 200ms, border-color 200ms, color 200ms;
-    }
-    .activity-renamer-primary-button {
-        color: var(--color-corewhite);
-        background-color: var(--color-coreo3);
-        border-color: var(--color-coreo3);
-    }
-    .activity-renamer-primary-button:hover:not([disabled]):not([data-state]),
-    .activity-renamer-primary-button:hover:not([disabled])[data-state="idle"] {
-        background-color: var(--color-extendedorangeo2);
-        border-color: var(--color-extendedorangeo2);
-    }
-    .activity-renamer-neutral-button {
-        color: var(--color-coreasphalt);
-        background-color: var(--color-corewhite);
-        border-color: var(--activity-renamer-line);
-    }
-    .activity-renamer-neutral-button:hover:not([disabled]) {
-        background-color: var(--color-coren7);
-    }
-    .activity-renamer-field {
-        padding: 10px 16px;
-        font-family: inherit;
-        font-size: 13px;
-        color: var(--color-coreasphalt);
-        background: var(--color-corewhite);
-        border: var(--border-width-thin) solid var(--activity-renamer-line);
-        border-radius: var(--border-radius-xs);
-    }
-}
-/* The shape of a control, which the page's own button rules would otherwise
-   flatten. Every value here is the one Strava's .btn already computes, so this
-   agrees with the page instead of overruling it; the paint stays in the layer
-   above, where Strava keeps the last word. */
+/* Only what Strava's own button rules leave open: the size, colour, weight and
+   radius of a control all arrive with its classes. */
 .activity-renamer-control.activity-renamer-control {
     box-sizing: border-box;
-    display: inline-flex;
     align-items: center;
     justify-content: center;
     margin: 0;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 700;
-    line-height: normal;
-    white-space: nowrap;
-    vertical-align: middle;
     cursor: pointer;
 }
 .activity-renamer-control.activity-renamer-control:active:not([disabled]) {
@@ -461,17 +417,6 @@
     margin: var(--space-3xs) 0 var(--space-sm);
     color: var(--activity-renamer-muted);
     font-size: 11px;
-}
-.activity-renamer-panel .activity-renamer-sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
 }
 .activity-renamer-panel button:focus-visible,
 .activity-renamer-panel input:focus-visible,
@@ -2258,7 +2203,7 @@
     }
 
     function createFieldLabel(inputId, text) {
-        const label = createElement('label', 'activity-renamer-sr-only', { textContent: text });
+        const label = createElement('label', STRAVA_CLASS.srOnly, { textContent: text });
         label.setAttribute('for', inputId);
         return label;
     }
@@ -2312,7 +2257,7 @@
         button.className += ' activity-renamer-icon-button';
         button.replaceChildren(
             createSectionIcon(icon),
-            createElement('span', 'activity-renamer-sr-only', { textContent: label }),
+            createElement('span', STRAVA_CLASS.srOnly, { textContent: label }),
         );
         button.title = label;
         button.setAttribute('aria-label', label);

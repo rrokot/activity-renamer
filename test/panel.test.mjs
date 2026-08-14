@@ -55,7 +55,7 @@ test('the four place collections behave as one tab set', async () => {
     assert.ok(tabs
         .every(button => button.children.every(child =>
             child.tagName === 'svg'
-            || child.className === 'activity-renamer-sr-only')),
+            || child.className === 'sr-only')),
     'tabs show only icons while retaining hidden accessible names');
     assert.ok(tabs.every(button => button.querySelectorAll('span')
         .every(span => !span.className.includes('activity-renamer-chevron'))));
@@ -135,7 +135,7 @@ test('stores a permanent automatic place density', async () => {
     const densityLabel = renamer.panel.querySelector(
         'label[for="activity-renamer-auto-place-spacing"]',
     );
-    assert.equal(densityLabel.className, 'activity-renamer-sr-only');
+    assert.equal(densityLabel.className, 'sr-only');
     assert.match(density.title, /map span divided by this value/i);
     const count = panelField(renamer, 'activity-renamer-name-place-count');
     assert.equal(density.parentNode, count.parentNode);
@@ -204,7 +204,7 @@ test('shows the calculated place count and overrides it for this ride', async ()
     );
     assert.equal(
         renamer.panel.querySelector('label[for="activity-renamer-name-place-count"]').className,
-        'activity-renamer-sr-only',
+        'sr-only',
         'the shared control label remains available to assistive technology',
     );
     const countBlock = limit.parentNode.parentNode;
