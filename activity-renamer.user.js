@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.15
+// @version      0.1.20
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -58,6 +58,7 @@
         done: '✔️ Done!',
         error: '❌ Error',
         noGps: 'No GPS data found (manual entry or indoor activity?)',
+        noPlaces: 'No named OSM place, road, or Favorite near this route.',
         noId: 'Could not detect activity ID from URL.',
     };
 
@@ -1454,13 +1455,18 @@
         const placePassages = passagesNearPlaces(track, features.places);
         const roadPassages = passagesNearRoads(track, features.roads);
         const passages = placePassages.concat(roadPassages).sort(byTrackOrder);
-        cacheRoutePassages(
-            activityId,
-            track,
-            passages,
-            features.places.length,
-            features.roads.length,
-        );
+        // A route with nothing named beside it is worth asking about again:
+        // caching the empty answer would outlive an Overpass mirror that
+        // simply had no data to give, or an OSM gap somebody later filled.
+        if (passages.length > 0) {
+            cacheRoutePassages(
+                activityId,
+                track,
+                passages,
+                features.places.length,
+                features.roads.length,
+            );
+        }
         return {
             passages,
             cached: false,
@@ -2030,11 +2036,11 @@
         return response.text();
     }
 
+    // An activity without GPS answers the export with Strava's own HTML page,
+    // so a document that is not GPX means "no track" rather than a failure.
     function parseGpxTrack(gpxText) {
         const xml = new DOMParser().parseFromString(gpxText, 'text/xml');
-        if (xml.querySelector('parsererror')) {
-            throw new Error('Downloaded GPX is not valid XML.');
-        }
+        if (xml.querySelector('parsererror')) return null;
 
         const points = Array.from(xml.getElementsByTagName('trkpt'));
         if (points.length === 0) return null;
@@ -3152,8 +3158,11 @@
                     + ` and ${routeFeatures.roadCount} named roads`));
 
             const activityName = buildActivityName(routeFeatures.passages, track);
+            // Remote country and gaps in OpenStreetMap both end here. Neither is
+            // a fault of the run, so the rider is told rather than alarmed.
             if (activityName.names.length === 0) {
-                throw new Error('The route has no named OSM place, road, or Favorite.');
+                alert(STRINGS.noPlaces);
+                return;
             }
             lastRouteAnalysis = { activityId, track, passages: activityName.passages };
 
@@ -3178,6 +3187,32 @@
         }
     }
 
+    // The editor offers a polyline style only where a route was recorded, which
+    // makes this field the page's one answer to "is there a track to name". The
+    // map container and the map image say the same, but through styling rather
+    // than through the form, so they are not read.
+    const ROUTE_MARKER_SELECTOR = 'select[name="activity[selected_polyline_style]"]';
+    const SPORT_TYPE_SELECTOR = 'select[name="activity[sport_type]"]';
+
+    function pageShowsRoute() {
+        return Boolean(document.querySelector(ROUTE_MARKER_SELECTOR));
+    }
+
+    function pageSportType() {
+        return document.querySelector(SPORT_TYPE_SELECTOR)?.value || '';
+    }
+
+    // Silence is the intended outcome on a page the script leaves alone, but it
+    // is also what a redesigned editor would produce, and only the log tells the
+    // two apart afterwards. Once per page is enough: the observers keep asking.
+    let skipLogged = false;
+
+    function skipPage(reason) {
+        if (!skipLogged) log(`No controls added: ${reason}`);
+        skipLogged = true;
+        return false;
+    }
+
     function injectButton() {
         if (document.getElementById(BUTTON_ID)) {
             if (namePanelState?.open && !document.getElementById(NAME_PANEL_ID)) renderNamePanel();
@@ -3186,6 +3221,16 @@
 
         const titleLabel = document.querySelector('label[for="activity_name"]');
         if (!titleLabel?.parentNode) return false;
+        // A virtual ride records a real track through a world OpenStreetMap
+        // does not describe, so its route is no basis for a name either.
+        const sportType = pageSportType();
+        if (sportType.startsWith('Virtual')) {
+            return skipPage(`${sportType} happens in a virtual world`);
+        }
+        if (!pageShowsRoute()) {
+            return skipPage('this activity has no recorded route'
+                + ' (if it does, the Strava editor markup has changed)');
+        }
 
         installStyles();
 

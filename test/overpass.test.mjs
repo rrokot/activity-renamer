@@ -27,6 +27,22 @@ test('reuses the cached landmarks on the second run', async () => {
     );
 });
 
+// Nothing named beside the route may mean an OSM gap, so the answer is asked
+// for again instead of standing for a month.
+test('does not cache a route without landmarks', async () => {
+    const renamer = loadRenamer();
+
+    await renamer.generate();
+    await renamer.generate();
+
+    assert.equal(renamer.overpassRequestCount(), 2, 'the empty answer is asked for again');
+    assert.ok(
+        [...renamer.localStorage.store.keys()]
+            .every(key => !key.startsWith('activity_renamer_features_')),
+        'no empty passage list is stored',
+    );
+});
+
 test('discards a cache written under different naming settings', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const cacheKey = `activity_renamer_features_v2_${fixture.activityId}`;

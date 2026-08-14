@@ -24,7 +24,9 @@ places along the route.
 
 ## Usage
 
-1. Open a Strava activity's edit page.
+1. Open a Strava activity's edit page. The controls appear only where the editor
+   shows a recorded real-world route, so an indoor, manually entered or virtual
+   activity keeps its page untouched.
 2. Click **Build Name**.
 3. Optionally open the arrow beside the controls to edit the result inline.
 4. Save the activity.

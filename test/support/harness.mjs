@@ -134,6 +134,8 @@ export { jsonResponse, textResponse, HttpError };
  * @param {string} [options.gpx] GPX body served for the export request
  * @param {Array}  [options.overpassResponses] queued Overpass replies (last one repeats)
  * @param {Array}  [options.nominatimResponses] queued Nominatim replies (last one repeats)
+ * @param {boolean} [options.withRoute] whether the editor shows a recorded route
+ * @param {string} [options.sportType] value of the editor's sport-type field
  * @param {object} [options.storage] initial localStorage contents
  * @param {Function} [options.prompt] window.prompt stub
  * @param {Function} [options.confirm] window.confirm stub
@@ -168,7 +170,10 @@ export function loadRenamer(options = {}) {
 
     const localStorage = createLocalStorage(storage);
     const userscriptStore = new Map(Object.entries(options.userscriptStorage || {}));
-    const { document, input, label } = createEditPageDocument();
+    const { document, input, label } = createEditPageDocument({
+        withRoute: options.withRoute,
+        sportType: options.sportType,
+    });
     document.adoptedStyleSheets = [];
 
     const respond = async (url, init, transport) => {

@@ -286,10 +286,23 @@ export class FakeMutationObserver {
     }
 }
 
-// A Strava activity edit page with the name field the script fills in.
-export function createEditPageDocument() {
+function createSelect(document, name, value) {
+    const select = document.createElement('select');
+    select.setAttribute('name', name);
+    select.value = value;
+    return select;
+}
+
+// A Strava activity edit page with the name field the script fills in. The
+// polyline-style field comes with the activity that recorded a route, so a page
+// built without it stands for an indoor or manual entry.
+export function createEditPageDocument({ withRoute = true, sportType = 'Ride' } = {}) {
     const document = new FakeDocument();
     const form = document.createElement('form');
+    form.append(createSelect(document, 'activity[sport_type]', sportType));
+    if (withRoute) {
+        form.append(createSelect(document, 'activity[selected_polyline_style]', 'default'));
+    }
     const label = document.createElement('label');
     label.setAttribute('for', 'activity_name');
     label.textContent = 'Title';

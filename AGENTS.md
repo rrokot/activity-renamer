@@ -68,7 +68,7 @@ Test responsibilities:
 | `panel.test.mjs` | Sections, tabs, place counts, panel semantics, focus, validation and address search |
 | `storage.test.mjs` | Tampermonkey storage |
 | `overpass.test.mjs` | Mirrors, retry policy, transport and feature cache |
-| `page.test.mjs` | Injection, observers, stylesheet and activities without GPS |
+| `page.test.mjs` | Injection, observers, stylesheet, pages the script leaves alone and activities without GPS |
 
 ## Fixtures
 

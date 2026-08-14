@@ -74,8 +74,9 @@ test('re-injects the button when Strava re-renders the title field', async () =>
     renamer.panelToggleButton.click();
     assert.ok(renamer.panel);
 
-    // Strava rebuilds the field, throwing our wrapper away with it.
-    form.replaceChildren();
+    // Strava rebuilds the field, throwing our wrapper away with it. The rest of
+    // the form, the route field among it, is left where it was.
+    form.replaceChildren(...form.querySelectorAll('select'));
     const label = renamer.document.createElement('label');
     label.setAttribute('for', 'activity_name');
     const input = renamer.document.createElement('input');
@@ -101,4 +102,59 @@ test('reports an activity without GPS instead of naming it', async () => {
     assert.deepEqual(renamer.alerts, ['No GPS data found (manual entry or indoor activity?)']);
     assert.equal(renamer.name, '');
     assert.equal(renamer.panelToggleButton.disabled, false);
+});
+
+// An indoor or manual entry has no route block in the editor, and nothing the
+// script offers applies to it.
+test('stays out of an activity page without a route', async () => {
+    const renamer = loadRenamer({ withRoute: false });
+    await renamer.ready;
+
+    assert.equal(renamer.button, null, 'no naming button');
+    assert.equal(renamer.panelToggleButton, null, 'no settings chevron');
+    assert.equal(renamer.panel, null, 'no panel');
+    assert.equal(renamer.document.adoptedStyleSheets.length, 0, 'no stylesheet either');
+    assert.ok(
+        renamer.logs.some(line => line.includes('no recorded route')),
+        'the reason is on the record, so a redesign is not mistaken for silence',
+    );
+});
+
+// A virtual ride draws a map in the editor, but its world is not the one OSM
+// describes, so the controls have no business being there.
+test('stays out of a virtual activity page', async () => {
+    for (const sportType of ['VirtualRide', 'VirtualRun', 'VirtualRow']) {
+        const renamer = loadRenamer({ sportType });
+        await renamer.ready;
+
+        assert.equal(renamer.button, null, `no naming button on a ${sportType}`);
+        assert.equal(renamer.panelToggleButton, null, `no settings chevron on a ${sportType}`);
+        assert.equal(renamer.document.adoptedStyleSheets.length, 0, 'no stylesheet either');
+        assert.ok(
+            renamer.logs.some(line => line.includes(`${sportType} happens in a virtual world`)),
+            'the reason names the sport that was skipped',
+        );
+    }
+});
+
+// Remote country, or a gap in OpenStreetMap: the ride is fine, the map is empty.
+test('reports a route without landmarks instead of failing', async () => {
+    const renamer = loadRenamer();
+
+    await renamer.generate();
+
+    assert.deepEqual(renamer.alerts, ['No named OSM place, road, or Favorite near this route.']);
+    assert.equal(renamer.name, '');
+    assert.deepEqual(renamer.errors, []);
+    assert.equal(renamer.button.dataset.state, 'idle');
+});
+
+// Indoor activities answer the GPX export with the ordinary activity page.
+test('reports a non-GPX export as an activity without GPS', async () => {
+    const renamer = loadRenamer({ gpx: '<!DOCTYPE html><html><body>Pilates</body></html>' });
+
+    await renamer.generate();
+
+    assert.deepEqual(renamer.alerts, ['No GPS data found (manual entry or indoor activity?)']);
+    assert.equal(renamer.name, '');
 });
