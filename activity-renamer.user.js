@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.24
+// @version      0.1.25
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -82,11 +82,8 @@
         autoPlaceSpacingKm: 'activity_renamer_auto_place_spacing_km_v1',
     };
     const settings = new Map();
-    // Strava's edit form still ships its own control kit, so the panel dresses
-    // itself in it instead of imitating it. btn-sm is the 32px size the form
-    // uses for compact actions, input-sm is its matching field, and sr-only is
-    // the page's own way of leaving a label to assistive technology alone.
-    // Everything worn this way follows Strava's changes without being asked.
+    // Strava's edit form still ships its own control kit. Wearing it means the
+    // page paints the panel, and keeps painting it after a Strava redesign.
     const STRAVA_CLASS = {
         primaryButton: 'btn btn-primary btn-sm',
         neutralButton: 'btn btn-default btn-sm',
@@ -99,17 +96,15 @@
     // page's style-src policy can drop the tag but never reaches constructed
     // sheets — the same reason the network calls go through the manager.
     //
-    // The buttons and fields wear Strava's own control classes (STRAVA_CLASS
-    // above), so the page paints them. What is left here is layout, the panel
-    // shell, and the parts Strava has no class for. Nothing repeats a control's
-    // skin: the day those classes go, the panel looks broken and gets fixed
-    // rather than quietly drifting away from the form around it.
+    // It owns layout and the parts Strava has no class for, and never repeats
+    // a control's skin: if those classes go the panel should look broken and
+    // get fixed, not keep working while drifting away from the form.
     //
-    // Spacing, radii and the brand colours come from the design tokens Strava
-    // declares on :root, used without a var() fallback so a renamed token drops
-    // its rule instead of silently drifting out of date. The edit form predates
-    // those tokens and paints from an older palette that has no token to point
-    // at, so those five values are measured from the form and named once below.
+    // Spacing, radii and brand colour come from the design tokens on :root,
+    // without a var() fallback so a renamed token drops its rule instead of
+    // drifting out of date. The form predates those tokens, so the five values
+    // it paints from that have no token to point at are measured and named
+    // below.
     const STYLES = `
 .activity-renamer-controls,
 .activity-renamer-panel {
@@ -119,10 +114,8 @@
     --activity-renamer-rail-start: #f4f4f4;
     --activity-renamer-rail-rest: #f0f0f0;
 }
-/* Only what Strava's own button rules leave open. Colour, weight and radius
-   arrive with the classes; the doubled selector is here because the rules
-   below it answer to Strava's, and one specificity for all of them is easier
-   to follow than a different one per rule. */
+/* Layout only; colour, weight and radius arrive with the Strava classes. The
+   doubled selector gives every rule here one specificity against theirs. */
 .activity-renamer-control.activity-renamer-control {
     box-sizing: border-box;
     align-items: center;
@@ -149,8 +142,7 @@
     background-color: var(--color-extendedredr3);
     border-color: var(--color-extendedredr3);
 }
-/* The chevron is the same square as the panel's icon buttons, but it sits in
-   Strava's form rather than the panel, so it states the shape itself. */
+/* The same square, stated again because it sits in the form, not the panel. */
 .activity-renamer-button--toggle.activity-renamer-button--toggle {
     margin-left: var(--space-3xs);
     min-width: 32px;
@@ -174,7 +166,6 @@
     cursor: default;
 }
 .activity-renamer-controls { display: flex; align-items: center; }
-/* The same white card on a hairline that the editor gives Privacy Controls. */
 .activity-renamer-panel {
     box-sizing: border-box;
     width: 100%;
@@ -204,9 +195,8 @@
     stroke-linejoin: round;
     stroke-width: 1.8;
 }
-/* Every icon button in the panel is the same square, whether it opens a
-   collection or acts on a row. Strava sizes btn-sm through its padding, so
-   dropping that padding means stating the height the padding used to imply. */
+/* Strava sizes btn-sm through its padding, so a square that drops the padding
+   has to state the height that padding implied. */
 .activity-renamer-panel .activity-renamer-icon-button {
     display: inline-flex;
     align-items: center;
@@ -265,9 +255,8 @@
     align-items: center;
     gap: var(--space-2xs);
 }
-/* A browser drops the whole rule when it meets a track or thumb selector it
-   does not know, so the two engines cannot share one. They share the values
-   instead: the rail is written once here and read by both. */
+/* A browser drops the whole rule when it meets the other engine's selector, so
+   the two tracks cannot share one. They share the value instead. */
 .activity-renamer-panel .activity-renamer-name-count-slider {
     --activity-renamer-rail:
         linear-gradient(
@@ -383,8 +372,7 @@
     gap: var(--space-3xs);
     margin: var(--space-2xs) 0;
 }
-/* The chips borrow the geometry of the editor's own tag pills; the fill stays
-   orange because a chip is a place the title already carries. */
+/* Tag-pill geometry, but filled: a chip is a place the title already carries. */
 .activity-renamer-panel .activity-renamer-chip {
     display: inline-flex;
     align-items: stretch;
@@ -2189,8 +2177,7 @@
         );
     }
 
-    // The Strava class is appended last so a caller that replaces className
-    // through the properties still gets the page's own field styling.
+    // Appended last so a caller that replaces className still gets it.
     function createPanelInput(properties = {}) {
         const input = createElement(
             'input',
