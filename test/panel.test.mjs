@@ -303,6 +303,22 @@ test('shows the calculated place count and overrides it for this ride', async ()
     assert.equal(renamer.panelToggleButton.textContent, '');
 });
 
+test('rewriting the name for a count leaves focus alone', async () => {
+    const { renamer } = loadScenario('dense-settlements');
+    await renamer.generate();
+    openPanel(renamer);
+
+    const slider = panelField(renamer, 'activity-renamer-name-place-count-slider');
+    slider.focus();
+    typeInto(slider, '4');
+
+    assert.equal(renamer.name.split(' - ').length, 4);
+    // assert.equal would diff two elements, and an element holds the whole
+    // document through its parents; assert.ok reports the message instead.
+    assert.ok(renamer.document.activeElement === slider,
+        'the title field must not take focus mid-drag: Gecko ends the drag when it does');
+});
+
 test('treats the selected count as final when a manual place would exceed it', async () => {
     const fixture = loadFixture('dense-settlements');
     const { renamer } = loadScenario('dense-settlements', {

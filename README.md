@@ -18,7 +18,7 @@ places along the route.
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. In Chrome or Edge 138+, open Tampermonkey's extension settings and enable
-   **Allow User Scripts**.
+   **Allow User Scripts**. Firefox has no such switch.
 3. Open [Activity Renamer](https://raw.githubusercontent.com/rrokot/activity-renamer/master/activity-renamer.user.js).
 4. Confirm the installation.
 

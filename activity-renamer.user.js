@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.26
+// @version      0.1.27
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -255,8 +255,16 @@
     align-items: center;
     gap: var(--space-2xs);
 }
-/* The track and thumb are shaped for Blink alone, as the README asks for. */
+/* A browser drops the whole rule when it meets the other engine's selector, so
+   the two tracks cannot share one. They share the value instead. */
 .activity-renamer-panel .activity-renamer-name-count-slider {
+    --activity-renamer-rail:
+        linear-gradient(
+            90deg,
+            transparent 0 var(--activity-renamer-slider-progress),
+            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
+        ),
+        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     appearance: none;
     flex: 1 1 auto;
     min-width: 0;
@@ -268,13 +276,7 @@
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-runnable-track {
     height: 4px;
-    background:
-        linear-gradient(
-            90deg,
-            transparent 0 var(--activity-renamer-slider-progress),
-            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
-        ),
-        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
+    background: var(--activity-renamer-rail);
     border-radius: var(--border-radius-xs);
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-thumb {
@@ -282,6 +284,20 @@
     width: 16px;
     height: 28px;
     margin-top: -12px;
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
+    border-radius: var(--border-radius-xs);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-track {
+    height: 4px;
+    background: var(--activity-renamer-rail);
+    border: 0;
+    border-radius: var(--border-radius-xs);
+}
+.activity-renamer-panel .activity-renamer-name-count-slider::-moz-range-thumb {
+    width: 16px;
+    height: 28px;
     background: var(--color-corewhite);
     border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
     border-radius: var(--border-radius-xs);
@@ -2074,13 +2090,16 @@
         return name.length > limit ? `${name.slice(0, limit - 1).trimEnd()}…` : name;
     }
 
-    function setActivityName(names) {
+    // Focus belongs to the one action that hands the name over to be read;
+    // every later refresh leaves it alone. Taking it on each edit pulls it out
+    // of a slider mid-drag, and Gecko ends the drag when that happens.
+    function setActivityName(names, { focusField = false } = {}) {
         if (!names.length) return false;
         const nameInput = document.querySelector('input[name="activity[name]"]');
         if (!nameInput) return false;
         nameInput.value = fitNameLength(names);
         nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-        nameInput.focus();
+        if (focusField) nameInput.focus();
         return true;
     }
 
@@ -3137,7 +3156,7 @@
 
             // Logged after the fact: an over-long narrative reaches the field
             // shortened, and the log should show what was actually written.
-            setActivityName(activityName.names);
+            setActivityName(activityName.names, { focusField: true });
             renderNamePanel();
             log(`Name: ${fitNameLength(activityName.names)}`);
             setButtonState(button, STRINGS.done, 'success');
