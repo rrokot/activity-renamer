@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.20
+// @version      0.1.21
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -82,58 +82,95 @@
         autoPlaceSpacingKm: 'activity_renamer_auto_place_spacing_km_v1',
     };
     const settings = new Map();
+    // Strava's edit form still ships its own control kit, so the panel dresses
+    // its buttons and fields in it instead of imitating them. btn-sm is the
+    // 32px size the form uses for compact actions; input-sm is its matching
+    // field. Everything the page paints this way follows Strava's own changes.
+    const STRAVA_CLASS = {
+        primaryButton: 'btn btn-primary btn-sm',
+        neutralButton: 'btn btn-default btn-sm',
+        field: 'form-control input-sm',
+    };
+
     // One stylesheet instead of a style object per element. It is adopted
     // through the CSSOM rather than injected as a <style> tag, because a
     // page's style-src policy can drop the tag but never reaches constructed
     // sheets — the same reason the network calls go through the manager.
-    // Inline styles used to beat Strava's own CSS for free; class rules do not,
-    // so panel rules are scoped under their root and the two buttons that sit
-    // inside Strava's form repeat their class to outweigh the page.
     //
-    // Colours, radii and spacing are Strava's own design tokens, declared on
-    // :root by the page, so the panel follows the site instead of guessing at
-    // it. They are used without a var() fallback: if Strava ever renames one,
-    // the affected rule drops out rather than silently drifting out of date.
+    // The buttons and fields wear Strava's own control classes (STRAVA_CLASS
+    // above), so the page paints them and they keep following Strava. What is
+    // left here is layout, the panel shell, and the parts Strava has no class
+    // for. Their skin is repeated inside a cascade layer, which every unlayered
+    // rule outranks: Strava wins while its classes exist, and the panel is
+    // still readable on the day they go.
+    //
+    // Spacing, radii and the brand colours come from the design tokens Strava
+    // declares on :root, used without a var() fallback so a renamed token drops
+    // its rule instead of silently drifting out of date. The edit form predates
+    // those tokens and paints from an older palette that has no token to point
+    // at, so those five values are measured from the form and named once below.
     const STYLES = `
+.activity-renamer-controls,
+.activity-renamer-panel {
+    --activity-renamer-line: #dfdfe8;
+    --activity-renamer-muted: #6d6d78;
+    --activity-renamer-handle-line: #ceced3;
+    --activity-renamer-rail-start: #f4f4f4;
+    --activity-renamer-rail-rest: #f0f0f0;
+}
+@layer activity-renamer-fallback {
+    .activity-renamer-control {
+        min-height: 32px;
+        padding: 6px 12px;
+        border: var(--border-width-thin) solid transparent;
+        border-radius: var(--border-radius-sm);
+        transition: background-color 200ms, border-color 200ms, color 200ms;
+    }
+    .activity-renamer-primary-button {
+        color: var(--color-corewhite);
+        background-color: var(--color-coreo3);
+        border-color: var(--color-coreo3);
+    }
+    .activity-renamer-primary-button:hover:not([disabled]):not([data-state]),
+    .activity-renamer-primary-button:hover:not([disabled])[data-state="idle"] {
+        background-color: var(--color-extendedorangeo2);
+        border-color: var(--color-extendedorangeo2);
+    }
+    .activity-renamer-neutral-button {
+        color: var(--color-coreasphalt);
+        background-color: var(--color-corewhite);
+        border-color: var(--activity-renamer-line);
+    }
+    .activity-renamer-neutral-button:hover:not([disabled]) {
+        background-color: var(--color-coren7);
+    }
+    .activity-renamer-field {
+        padding: 10px 16px;
+        font-family: inherit;
+        font-size: 13px;
+        color: var(--color-coreasphalt);
+        background: var(--color-corewhite);
+        border: var(--border-width-thin) solid var(--activity-renamer-line);
+        border-radius: var(--border-radius-xs);
+    }
+}
+/* The shape of a control, which the page's own button rules would otherwise
+   flatten. Every value here is the one Strava's .btn already computes, so this
+   agrees with the page instead of overruling it; the paint stays in the layer
+   above, where Strava keeps the last word. */
 .activity-renamer-control.activity-renamer-control {
     box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 32px;
     margin: 0;
-    padding: var(--space-3xs) var(--space-2xs);
     font-family: inherit;
     font-size: 14px;
-    font-weight: 600;
-    line-height: 20px;
-    border: var(--border-width-thin) solid transparent;
-    border-radius: var(--border-radius-sm);
-    cursor: pointer;
-    transition:
-        background-color 120ms ease,
-        border-color 120ms ease,
-        transform 60ms ease;
-}
-.activity-renamer-primary-button.activity-renamer-primary-button {
-    color: var(--color-corewhite);
+    font-weight: 700;
+    line-height: normal;
+    white-space: nowrap;
     vertical-align: middle;
-    background-color: var(--color-coreo3);
-    border-color: var(--color-coreo3);
-}
-.activity-renamer-primary-button.activity-renamer-primary-button:hover:not([disabled]):not([data-state]),
-.activity-renamer-primary-button.activity-renamer-primary-button:hover:not([disabled])[data-state="idle"] {
-    background-color: var(--color-extendedorangeo2);
-    border-color: var(--color-extendedorangeo2);
-}
-.activity-renamer-neutral-button.activity-renamer-neutral-button {
-    color: var(--color-extendedneutraln1);
-    background-color: var(--color-extendedneutraln6);
-    border-color: var(--color-extendedneutraln5);
-}
-.activity-renamer-neutral-button.activity-renamer-neutral-button:hover:not([disabled]) {
-    background-color: var(--color-extendedneutraln5);
-    border-color: var(--color-extendedneutraln4);
+    cursor: pointer;
 }
 .activity-renamer-control.activity-renamer-control:active:not([disabled]) {
     transform: translateY(1px);
@@ -175,15 +212,16 @@
     cursor: default;
 }
 .activity-renamer-controls { display: flex; align-items: center; }
+/* The same white card on a hairline that the editor gives Privacy Controls. */
 .activity-renamer-panel {
     box-sizing: border-box;
     width: 100%;
     margin: var(--space-xs) 0 var(--space-md);
     padding: var(--space-sm);
-    color: var(--color-extendedneutraln1);
-    background: var(--color-extendedneutraln7);
-    border: var(--border-width-thin) solid var(--color-extendedneutraln6);
-    border-radius: var(--border-radius-md);
+    color: var(--color-coreasphalt);
+    background: var(--color-corewhite);
+    border: var(--border-width-thin) solid var(--activity-renamer-line);
+    border-radius: var(--border-radius-sm);
 }
 .activity-renamer-panel[aria-busy="true"] { cursor: progress; }
 .activity-renamer-panel h4 {
@@ -191,6 +229,8 @@
     align-items: center;
     gap: var(--space-2xs);
     margin: var(--space-md) 0 var(--space-3xs);
+    font-size: 13px;
+    font-weight: 700;
 }
 .activity-renamer-panel .activity-renamer-section-icon {
     flex: 0 0 auto;
@@ -212,7 +252,7 @@
     min-height: 32px;
     margin: 0;
     padding: 0;
-    color: var(--color-extendedneutraln1);
+    color: var(--activity-renamer-muted);
     background: none;
     border: none;
     cursor: pointer;
@@ -245,18 +285,13 @@
 }
 .activity-renamer-panel .activity-renamer-note {
     margin: 0 0 var(--space-2xs);
-    color: var(--color-extendedneutraln3);
+    color: var(--activity-renamer-muted);
     font-size: 12px;
 }
 .activity-renamer-panel .activity-renamer-panel-button[disabled] { opacity: 0.5; cursor: default; }
 .activity-renamer-panel .activity-renamer-field {
     flex: 1 1 auto;
     min-width: 0;
-    padding: var(--space-2xs) var(--space-xs);
-    color: var(--color-extendedneutraln1);
-    background: var(--color-corewhite);
-    border: var(--border-width-thin) solid var(--color-extendedneutraln5);
-    border-radius: var(--border-radius-sm);
 }
 .activity-renamer-panel .activity-renamer-field--narrow { flex: 0 0 130px; }
 .activity-renamer-panel .activity-renamer-form {
@@ -289,9 +324,9 @@
         linear-gradient(
             90deg,
             transparent 0 var(--activity-renamer-slider-progress),
-            #e5e5e5 var(--activity-renamer-slider-progress) 100%
+            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
         ),
-        linear-gradient(90deg, #f4f4f4, var(--color-coreo3));
+        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     border-radius: 2px;
 }
 .activity-renamer-panel .activity-renamer-name-count-slider::-webkit-slider-thumb {
@@ -300,7 +335,7 @@
     height: 28px;
     margin-top: -12px;
     background: var(--color-corewhite);
-    border: var(--border-width-thin) solid #007fb6;
+    border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
     border-radius: 2px;
     box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
@@ -310,9 +345,9 @@
         linear-gradient(
             90deg,
             transparent 0 var(--activity-renamer-slider-progress),
-            #e5e5e5 var(--activity-renamer-slider-progress) 100%
+            var(--activity-renamer-rail-rest) var(--activity-renamer-slider-progress) 100%
         ),
-        linear-gradient(90deg, #f4f4f4, var(--color-coreo3));
+        linear-gradient(90deg, var(--activity-renamer-rail-start), var(--color-coreo3));
     border: 0;
     border-radius: 2px;
 }
@@ -320,17 +355,21 @@
     width: 16px;
     height: 28px;
     background: var(--color-corewhite);
-    border: var(--border-width-thin) solid #007fb6;
+    border: var(--border-width-thin) solid var(--activity-renamer-handle-line);
     border-radius: 2px;
     box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
 .activity-renamer-panel .activity-renamer-name-count .activity-renamer-note {
     margin: var(--space-4xs) 0 0;
 }
+/* Strava's field padding is written for a full-width input; a two-digit box
+   needs the room back. */
 .activity-renamer-panel .activity-renamer-name-count input[type="number"] {
     flex: 0 0 auto;
-    min-width: 64px;
-    width: 64px;
+    min-width: 72px;
+    width: 72px;
+    padding-right: var(--space-2xs);
+    padding-left: var(--space-2xs);
 }
 .activity-renamer-panel .activity-renamer-mode-field {
     transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -342,7 +381,7 @@
 .activity-renamer-panel .activity-renamer-status {
     min-height: 18px;
     margin-top: var(--space-4xs);
-    color: var(--color-extendedneutraln3);
+    color: var(--activity-renamer-muted);
     font-size: 12px;
 }
 .activity-renamer-panel .activity-renamer-status--error { color: var(--color-extendedredr3); }
@@ -353,16 +392,16 @@
     column-gap: var(--space-2xs);
     row-gap: var(--space-3xs);
     padding: var(--space-3xs) 0;
-    border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--color-extendedneutraln6);
+    border-bottom: var(--divider-size-xs) var(--divider-variant-solid) var(--activity-renamer-line);
 }
 .activity-renamer-panel .activity-renamer-row-text { flex: 1 1 180px; min-width: 0; }
 .activity-renamer-panel .activity-renamer-row-title {
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1.2;
 }
 .activity-renamer-panel .activity-renamer-row-details {
     margin-top: 0;
-    color: var(--color-extendedneutraln3);
+    color: var(--activity-renamer-muted);
     font-size: 12px;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -376,9 +415,9 @@
 .activity-renamer-panel .activity-renamer-editor {
     margin: 0 0 var(--space-sm);
     padding: var(--space-xs);
-    background: var(--color-extendedneutraln7);
+    background: var(--color-coren7);
     border: var(--border-width-thin) solid var(--color-coreo3);
-    border-radius: var(--border-radius-md);
+    border-radius: var(--border-radius-sm);
 }
 .activity-renamer-panel .activity-renamer-editor h4 { margin: 0 0 var(--space-3xs); }
 /* The name is edited as the sentence it is: one chip per part, in order. */
@@ -389,12 +428,15 @@
     gap: var(--space-3xs);
     margin: var(--space-2xs) 0;
 }
+/* The chips borrow the geometry of the editor's own tag pills; the fill stays
+   orange because a chip is a place the title already carries. */
 .activity-renamer-panel .activity-renamer-chip {
     display: inline-flex;
     align-items: stretch;
+    min-height: 32px;
     background: var(--color-coreo3);
     border: var(--border-width-thin) solid var(--color-coreo3);
-    border-radius: var(--border-radius-sm);
+    border-radius: var(--border-radius-xs);
     overflow: hidden;
 }
 .activity-renamer-panel .activity-renamer-chip button {
@@ -404,7 +446,7 @@
     border: none;
     cursor: pointer;
 }
-.activity-renamer-panel .activity-renamer-chip-name { font-weight: 600; }
+.activity-renamer-panel .activity-renamer-chip-name { font-weight: 700; }
 .activity-renamer-panel .activity-renamer-chip-name:hover:not([disabled]) {
     background: var(--color-extendedorangeo2);
 }
@@ -417,7 +459,7 @@
 }
 .activity-renamer-panel .activity-renamer-attribution {
     margin: var(--space-3xs) 0 var(--space-sm);
-    color: var(--color-extendedneutraln4);
+    color: var(--activity-renamer-muted);
     font-size: 11px;
 }
 .activity-renamer-panel .activity-renamer-sr-only {
@@ -2197,14 +2239,22 @@
         return createElement(
             'button',
             `activity-renamer-control activity-renamer-panel-button ${primary
-                ? 'activity-renamer-primary-button'
-                : 'activity-renamer-neutral-button'}`,
+                ? `activity-renamer-primary-button ${STRAVA_CLASS.primaryButton}`
+                : `activity-renamer-neutral-button ${STRAVA_CLASS.neutralButton}`}`,
             { type: 'button', textContent: text },
         );
     }
 
+    // The Strava class is appended last so a caller that replaces className
+    // through the properties still gets the page's own field styling.
     function createPanelInput(properties = {}) {
-        return createElement('input', 'activity-renamer-field', { type: 'text', ...properties });
+        const input = createElement(
+            'input',
+            'activity-renamer-field',
+            { type: 'text', ...properties },
+        );
+        input.className += ` ${STRAVA_CLASS.field}`;
+        return input;
     }
 
     function createFieldLabel(inputId, text) {
@@ -3236,7 +3286,8 @@
 
         const button = createElement(
             'button',
-            'activity-renamer-control activity-renamer-button activity-renamer-primary-button',
+            `activity-renamer-control activity-renamer-button activity-renamer-primary-button ${
+                STRAVA_CLASS.primaryButton}`,
             {
                 id: BUTTON_ID,
                 type: 'button',
@@ -3251,7 +3302,8 @@
 
         const panelToggleButton = createElement(
             'button',
-            'activity-renamer-control activity-renamer-button activity-renamer-neutral-button activity-renamer-button--toggle',
+            'activity-renamer-control activity-renamer-button activity-renamer-neutral-button'
+                + ` activity-renamer-button--toggle ${STRAVA_CLASS.neutralButton}`,
             { id: PANEL_TOGGLE_BUTTON_ID, type: 'button' },
         );
         panelToggleButton.append(createStravaChevron());

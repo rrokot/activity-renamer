@@ -32,6 +32,27 @@ uses the wrapper's metadata. The wrapper must repeat every required `@grant`,
 `@connect`, `@match` and `@run-at`; the metadata inside the required file is
 ignored for permissions.
 
+## Panel styling
+
+The panel has to read as part of the edit form, so it borrows rather than
+imitates. Three rules keep it there:
+
+- Dress controls in Strava's own classes through `STRAVA_CLASS`
+  (`btn btn-primary btn-sm`, `btn btn-default btn-sm`, `form-control input-sm`)
+  instead of writing a button or field skin. `STYLES` then owns layout, the
+  panel shell and the parts Strava has no class for.
+- `STYLES` repeats that skin inside `@layer activity-renamer-fallback` so the
+  panel survives the day those classes go. Layered rules lose to every
+  unlayered one, including the page's own `button` and `input` element rules —
+  so anything the fallback must win, such as the shape of a control, belongs
+  outside the layer at a value Strava already computes.
+- Take spacing, radii and brand colour from the design tokens on `:root`,
+  without a `var()` fallback. The edit form itself predates those tokens and
+  paints from an older palette that has none: `#dfdfe8` hairlines, `#6d6d78`
+  secondary text, a `#ceced3` slider handle over an `#f4f4f4`-to-orange rail.
+  Those five are named once at the top of `STYLES`; do not invent a sixth
+  without measuring it on the page first.
+
 ## Naming pipeline
 
 The script downloads the full-resolution GPX, simplifies it for the Overpass
