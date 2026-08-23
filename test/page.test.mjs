@@ -5,6 +5,7 @@ import {
     loadRenamer,
     loadScenario,
 } from './support/harness.mjs';
+import { buildNotice } from './support/panel.mjs';
 // A page's style-src cannot block a constructed stylesheet.
 test('adopts its stylesheet through the CSSOM', async () => {
     const renamer = loadRenamer();
@@ -99,9 +100,26 @@ test('reports an activity without GPS instead of naming it', async () => {
 
     await renamer.generate();
 
-    assert.deepEqual(renamer.alerts, ['No GPS data found (manual entry or indoor activity?)']);
+    assert.equal(
+        buildNotice(renamer).textContent,
+        'No GPS data found (manual entry or indoor activity?)',
+    );
     assert.equal(renamer.name, '');
     assert.equal(renamer.panelToggleButton.disabled, false);
+});
+
+// A page the script was injected into but cannot address: the run has to end
+// somewhere the rider can read, and a modal would freeze the form behind it.
+test('reports an unreadable activity URL in the panel', async () => {
+    const renamer = loadRenamer({ activityId: 'kummersdorf' });
+
+    await renamer.generate();
+
+    const notice = buildNotice(renamer);
+    assert.equal(notice.textContent, 'Could not detect activity ID from URL.');
+    assert.match(notice.className, /activity-renamer-status--error/);
+    assert.equal(renamer.name, '');
+    assert.equal(renamer.button.dataset.state, 'idle', 'the button is usable again');
 });
 
 // An indoor or manual entry has no route block in the editor, and nothing the
@@ -143,7 +161,9 @@ test('reports a route without landmarks instead of failing', async () => {
 
     await renamer.generate();
 
-    assert.deepEqual(renamer.alerts, ['No named OSM place, road, or Favorite near this route.']);
+    const notice = buildNotice(renamer);
+    assert.equal(notice.textContent, 'No named OSM place, road, or Favorite near this route.');
+    assert.equal(notice.className, 'activity-renamer-status', 'an empty map is not a failure');
     assert.equal(renamer.name, '');
     assert.deepEqual(renamer.errors, []);
     assert.equal(renamer.button.dataset.state, 'idle');
@@ -155,6 +175,9 @@ test('reports a non-GPX export as an activity without GPS', async () => {
 
     await renamer.generate();
 
-    assert.deepEqual(renamer.alerts, ['No GPS data found (manual entry or indoor activity?)']);
+    assert.equal(
+        buildNotice(renamer).textContent,
+        'No GPS data found (manual entry or indoor activity?)',
+    );
     assert.equal(renamer.name, '');
 });

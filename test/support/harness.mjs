@@ -149,8 +149,9 @@ export function loadRenamer(options = {}) {
         storage = {},
     } = options;
 
-    // Blocking browser prompts cannot show the surrounding editor context, so
-    // every edit stays in the inline panel.
+    // Blocking browser prompts cannot show the surrounding editor context, and
+    // a modal freezes the page behind it, so every message stays in the inline
+    // panel.
     const refuseBlockingPrompt = name => () => {
         throw new Error(`window.${name} must not be used`);
     };
@@ -158,7 +159,6 @@ export function loadRenamer(options = {}) {
     const logs = [];
     const warnings = [];
     const errors = [];
-    const alerts = [];
     const requests = [];
     const timerDelays = [];
     let pendingTimers = 0;
@@ -258,7 +258,7 @@ export function loadRenamer(options = {}) {
                 this.cssText = css;
             }
         },
-        alert: message => alerts.push(String(message)),
+        alert: refuseBlockingPrompt('alert'),
         window: {
             location: { pathname: `/activities/${activityId}/edit`, href: '' },
             prompt: refuseBlockingPrompt('prompt'),
@@ -294,7 +294,6 @@ export function loadRenamer(options = {}) {
         logs,
         warnings,
         errors,
-        alerts,
         requests,
         timerDelays,
         localStorage,

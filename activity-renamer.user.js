@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.28
+// @version      0.1.29
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -13,6 +13,8 @@
 // @grant        GM.getValues
 // @grant        GM.setValue
 // @connect      overpass-api.de
+// @connect      lz4.overpass-api.de
+// @connect      z.overpass-api.de
 // @connect      overpass.kumi.systems
 // @connect      overpass.private.coffee
 // @connect      nominatim.openstreetmap.org
@@ -28,8 +30,10 @@
         featureCacheDays: 30,
         overpassMaxRoutePoints: 50,
         overpassTimeoutMs: 25000,
-        overpassMaxAttempts: 3,
+        overpassMirrorRounds: 3,
+        overpassRetryBudgetMs: 120000,
         overpassRetryBaseMs: 5000,
+        overpassRetryMaxMs: 30000,
         overpassMirrorRetryMs: 1000,
         minAutoPlaces: 3,
         autoNamePlaceCeiling: 7,
@@ -55,22 +59,35 @@
         analyzing: '⌛ Analyzing...',
         places: '⌛ Loading nearby landmarks',
         overpassBusy: '⌛ Overpass busy; retrying in',
+        overpassUnavailable: 'OpenStreetMap landmark search is busy right now.'
+            + ' Build the name again in a minute.',
+        landmarksFailed: 'Failed to load nearby OSM landmarks',
         done: '✔️ Done!',
         error: '❌ Error',
         noGps: 'No GPS data found (manual entry or indoor activity?)',
         noPlaces: 'No named OSM place, road, or Favorite near this route.',
         noId: 'Could not detect activity ID from URL.',
+        noField: 'Could not find the activity name field.',
     };
 
     const API_URL = {
         nominatimSearch: 'https://nominatim.openstreetmap.org/search',
     };
     // Tried in order, one per attempt: a busy or rate-limiting instance is
-    // usually answered instantly by the next mirror.
+    // usually answered instantly by the next mirror. lz4 leads because it
+    // answers in seconds where the round-robin front door takes tens of them,
+    // and operators alternate down the list so a bad minute at one of them is
+    // not met with two more of its own machines.
+    //
+    // Every entry must serve planet data. Regional instances answer an
+    // out-of-area query with an empty element list, which reads here as a
+    // route with nothing beside it rather than as a mirror to skip.
     const OVERPASS_ENDPOINTS = [
-        'https://overpass-api.de/api/interpreter',
+        'https://lz4.overpass-api.de/api/interpreter',
         'https://overpass.kumi.systems/api/interpreter',
+        'https://overpass-api.de/api/interpreter',
         'https://overpass.private.coffee/api/interpreter',
+        'https://z.overpass-api.de/api/interpreter',
     ];
     const CACHE_PREFIX = {
         routeFeatures: 'activity_renamer_features_v2_',
@@ -434,8 +451,16 @@
     const BUTTON_ID = 'activity-renamer-rename-btn';
     const PANEL_TOGGLE_BUTTON_ID = 'activity-renamer-panel-toggle';
     const NAME_PANEL_ID = 'activity-renamer-name-panel';
+    const BUILD_STATUS_ID = 'activity-renamer-build-status';
     const LOG_PREFIX = '[Activity Renamer]';
-    const TRANSIENT_OVERPASS_STATUSES = new Set([406, 429, 502, 503, 504]);
+    // Where the blame lies, by status: a 5xx is the instance having a bad
+    // minute, 429 and 406 are it turning this caller away for now, and the
+    // rest means the query itself is wrong and no mirror will like it better.
+    const OVERPASS_REFUSAL_STATUSES = new Set([406, 429]);
+
+    function overpassIsBusy(status) {
+        return status >= 500 || OVERPASS_REFUSAL_STATUSES.has(status);
+    }
 
     // The OSM place ranks worth naming a route after: anything smaller is a
     // hamlet or a farm the rider would not call a destination.
@@ -990,8 +1015,11 @@
             + 'out body geom;';
     }
 
-    function overpassRetryDelay(response, attempt) {
-        const exponentialDelay = CONFIG.overpassRetryBaseMs * 2 ** (attempt - 1);
+    function overpassRetryDelay(response, round) {
+        const exponentialDelay = Math.min(
+            CONFIG.overpassRetryMaxMs,
+            CONFIG.overpassRetryBaseMs * 2 ** (round - 1),
+        );
         const retryAfter = response?.headers?.get?.('Retry-After');
         if (!retryAfter) return exponentialDelay;
 
@@ -1001,6 +1029,13 @@
         const retryAt = Date.parse(retryAfter);
         const serverDelay = Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
         return Math.max(exponentialDelay, serverDelay);
+    }
+
+    // Public Overpass instances time out, rate-limit and hand back half a
+    // response under load. That is the normal weather around them, so every
+    // form of it is retried, and none of it reaches the rider as a fault.
+    function overpassBusyError(detail) {
+        return Object.assign(new Error(STRINGS.overpassUnavailable), { transient: true, detail });
     }
 
     async function parseOverpassElements(response) {
@@ -1018,11 +1053,13 @@
 
     async function fetchOverpassElements(points, placeRadiusM, roadRadiusM, onRetry) {
         const query = routeFeatureOverpassQuery(points, placeRadiusM, roadRadiusM);
-        const attempts = Math.max(1, Math.floor(CONFIG.overpassMaxAttempts));
-        let failure = new Error('Failed to load nearby OSM landmarks');
+        const mirrors = OVERPASS_ENDPOINTS.length;
+        const startedAt = Date.now();
+        const attempts = Math.max(1, Math.floor(CONFIG.overpassMirrorRounds)) * mirrors;
+        let failure = overpassBusyError('no answer');
 
         for (let attempt = 1; attempt <= attempts; attempt++) {
-            const endpoint = OVERPASS_ENDPOINTS[(attempt - 1) % OVERPASS_ENDPOINTS.length];
+            const endpoint = OVERPASS_ENDPOINTS[(attempt - 1) % mirrors];
             let response;
             try {
                 response = await requestCrossOrigin(endpoint, {
@@ -1035,30 +1072,40 @@
                     body: `data=${encodeURIComponent(query)}`,
                 });
             } catch (error) {
-                failure = new Error(`Failed to load nearby OSM landmarks: ${errorMessage(error)}`);
+                failure = overpassBusyError(errorMessage(error));
             }
 
             if (response?.ok) {
                 try {
                     return await parseOverpassElements(response);
                 } catch (error) {
-                    failure = new Error(`Failed to load nearby OSM landmarks: ${errorMessage(error)}`);
+                    // A truncated body or a runtime-error page is what an
+                    // overloaded instance answers with, so it counts as busy.
+                    failure = overpassBusyError(errorMessage(error));
                 }
             } else if (response) {
-                failure = new Error(`Failed to load nearby OSM landmarks: HTTP ${response.status}`);
-                if (!TRANSIENT_OVERPASS_STATUSES.has(response.status)) throw failure;
+                // Only a query this script got wrong is worth stopping for.
+                if (!overpassIsBusy(response.status)) {
+                    throw new Error(`${STRINGS.landmarksFailed}: HTTP ${response.status}`);
+                }
+                failure = overpassBusyError(`HTTP ${response.status}`);
             }
             if (attempt === attempts) throw failure;
 
-            // Another instance has its own quota and queue, so a mirror is
-            // tried almost immediately; only a repeat of the same host waits
-            // out the exponential backoff.
-            const nextEndpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
-            const delay = nextEndpoint === endpoint
-                ? overpassRetryDelay(response, attempt)
+            // Every instance has its own quota and queue, so the next one is
+            // tried almost immediately. Only a sweep that found all of them
+            // busy waits, and waits longer each time round.
+            const nextEndpoint = OVERPASS_ENDPOINTS[attempt % mirrors];
+            const completedRound = attempt / mirrors;
+            const delay = Number.isInteger(completedRound)
+                ? overpassRetryDelay(response, completedRound)
                 : Math.max(0, CONFIG.overpassMirrorRetryMs);
+            // Nobody waits out an outage for a title. Once the sweeps have
+            // had their minutes, the rider is told to come back instead.
+            if (Date.now() - startedAt + delay > CONFIG.overpassRetryBudgetMs) throw failure;
+
             onRetry?.(delay);
-            console.warn(`${LOG_PREFIX} ${failure.message} from ${hostOf(endpoint)};`
+            log(`${hostOf(endpoint)} busy (${failure.detail});`
                 + ` retrying via ${hostOf(nextEndpoint)} in ${(delay / 1000).toFixed(1)}s`
                 + ` (${attempt}/${attempts})`);
             await sleep(delay);
@@ -2167,9 +2214,10 @@
     async function runPanelAction(action) {
         try {
             await action();
+            setPanelNotice('');
         } catch (error) {
             console.error(`${LOG_PREFIX} error:`, error);
-            alert(`${LOG_PREFIX} error:\n${errorMessage(error)}`);
+            setPanelNotice(errorMessage(error), true);
         }
     }
 
@@ -2540,7 +2588,25 @@
         }
     }
 
-    const PANEL_SECTIONS = [appendThisName, appendCollectionSections];
+    // Whatever the run or a panel click could not do is said here, above the
+    // name it was about. A blocking dialog would cover that form and freeze
+    // the page behind it, so the panel is the only channel.
+    function appendBuildNotice(panel, state) {
+        if (!state.notice) return;
+        const status = createStatusLine(state.notice.text, state.notice.isError);
+        status.id = BUILD_STATUS_ID;
+        panel.append(status);
+    }
+
+    function setPanelNotice(text, isError = false) {
+        const state = currentNamePanelState();
+        const notice = text ? { text, isError } : null;
+        if (!notice && !state.notice) return;
+        state.notice = notice;
+        renderNamePanel();
+    }
+
+    const PANEL_SECTIONS = [appendBuildNotice, appendThisName, appendCollectionSections];
 
     function panelFocusableElements(panel) {
         return Array.from(panel.querySelectorAll('button, input, textarea, select, a'))
@@ -2581,6 +2647,7 @@
             confirmingDeleteId: null,
             activeCollection: 'places',
             refreshCollection: null,
+            notice: null,
             countError: '',
             densityError: '',
             search: { query: '', candidates: [], status: '', error: false, busy: false },
@@ -3072,19 +3139,19 @@
     }
 
     async function generateAndFillName(button) {
-        const activityId = getActivityId();
-        if (!activityId) {
-            alert(STRINGS.noId);
+        // The panel mounts beside the name field, so without that field the
+        // button is the only thing left to report through.
+        if (!document.querySelector('input[name="activity[name]"]')) {
+            console.error(`${LOG_PREFIX} ${STRINGS.noField}`);
+            setButtonState(button, STRINGS.error, 'error');
+            await sleep(CONFIG.errorStateMs);
+            setButtonState(button, STRINGS.idle);
             return;
         }
 
-        const nameInput = document.querySelector('input[name="activity[name]"]');
-        if (!nameInput) {
-            alert('Could not find activity name field');
-            return;
-        }
-
-        currentNamePanelState().open = true;
+        const state = currentNamePanelState();
+        state.notice = null;
+        state.open = true;
         button.disabled = true;
         nameBuildBusy = true;
         updatePanelToggleButton();
@@ -3092,11 +3159,14 @@
         setButtonState(button, STRINGS.downloading, 'loading');
 
         try {
+            const activityId = getActivityId();
+            if (!activityId) throw new Error(STRINGS.noId);
+
             const gpxText = await downloadGpx(activityId);
             setButtonState(button, STRINGS.analyzing, 'loading');
             const track = parseGpxTrack(gpxText);
             if (!track) {
-                alert(STRINGS.noGps);
+                setPanelNotice(STRINGS.noGps);
                 return;
             }
             log(`${track.totalKm.toFixed(1)} km, ${track.latitudes.length} trackpoints`);
@@ -3116,7 +3186,7 @@
             // Remote country and gaps in OpenStreetMap both end here. Neither is
             // a fault of the run, so the rider is told rather than alarmed.
             if (activityName.names.length === 0) {
-                alert(STRINGS.noPlaces);
+                setPanelNotice(STRINGS.noPlaces);
                 return;
             }
             lastRouteAnalysis = { activityId, track, passages: activityName.passages };
@@ -3129,8 +3199,15 @@
             setButtonState(button, STRINGS.done, 'success');
             await sleep(CONFIG.successStateMs);
         } catch (error) {
+            // Public servers are busy sometimes. That is weather, not a fault:
+            // it is neither logged as an error nor painted as one.
+            if (error?.transient) {
+                log(`${errorMessage(error)} (${error.detail})`);
+                setPanelNotice(errorMessage(error));
+                return;
+            }
             console.error(LOG_PREFIX, error);
-            alert(`Error:\n${errorMessage(error)}`);
+            setPanelNotice(errorMessage(error), true);
             setButtonState(button, STRINGS.error, 'error');
             await sleep(CONFIG.errorStateMs);
         } finally {

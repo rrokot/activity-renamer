@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    buildNotice,
     chipNames,
     activateGroup,
     nameChip,
@@ -433,7 +434,7 @@ test('renames a place from its chip in the name', async () => {
     typeInto(panelField(renamer, 'activity-renamer-place-radius-input'), '500');
     activateGroup(panelField(renamer, 'activity-renamer-place-name-input'));
 
-    assert.equal(renamer.alerts.length, 0, 'the edit stays inside the panel');
+    assert.equal(buildNotice(renamer), null, 'the edit went through without complaint');
     assert.match(renamer.name, /Gurkenpause/);
     assert.equal(JSON.parse(renamer.userscriptStore.get(FAVORITES_KEY)).length, 1);
     assert.ok(chipNames(renamer).includes('Gurkenpause'));

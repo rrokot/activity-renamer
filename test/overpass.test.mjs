@@ -7,8 +7,10 @@ import {
     loadRenamer,
     loadScenario,
     overpassElements,
+    textResponse,
     toGpx,
 } from './support/harness.mjs';
+import { buildNotice } from './support/panel.mjs';
 
 const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
 const AUTO_PLACE_SPACING_KEY = 'activity_renamer_auto_place_spacing_km_v1';
@@ -131,8 +133,71 @@ test('falls over to another Overpass mirror when one is busy', async () => {
     assert.equal(name, fixture.expected);
     assert.equal(hosts.length, 2);
     assert.notEqual(hosts[0], hosts[1], 'the retry goes to a different instance');
-    assert.ok(renamer.warnings.some(line => line.includes('retrying via')));
+    assert.ok(renamer.logs.some(line => line.includes('retrying via')));
+    assert.deepEqual(renamer.warnings, [], 'a busy public server is not this run misbehaving');
     assert.ok(renamer.timerDelays.includes(1000), 'switching mirrors does not wait out a backoff');
+});
+
+// Every mirror busy at once is a bad minute for OpenStreetMap, not a broken
+// run: the sweep is repeated, and what the rider is told is to come back.
+test('sweeps the mirrors again before giving the rider a wait', async () => {
+    const fixture = loadFixture('loop-with-revisit');
+    const renamer = loadRenamer({
+        activityId: fixture.activityId,
+        gpx: toGpx(fixture.points),
+        overpassResponses: [jsonResponse({}, 504)],
+    });
+
+    await renamer.generate();
+
+    assert.equal(renamer.overpassRequestCount(), 15, 'five mirrors, three rounds');
+    assert.deepEqual(
+        renamer.timerDelays.filter(delay => delay >= 5000),
+        [5000, 10000],
+        'each finished sweep waits longer than the last',
+    );
+    const notice = buildNotice(renamer);
+    assert.match(notice.textContent, /busy right now/);
+    assert.equal(notice.className, 'activity-renamer-status', 'no red for a busy public server');
+    assert.deepEqual(renamer.errors, []);
+    assert.equal(renamer.button.dataset.state, 'idle');
+    assert.equal(renamer.name, '');
+});
+
+// Observed on overpass.kumi.systems under load: a plain 500 after fifty
+// seconds. A 5xx is the instance failing, never the query.
+test('reads any server error as a busy mirror', async () => {
+    const fixture = loadFixture('loop-with-revisit');
+    const renamer = loadRenamer({
+        activityId: fixture.activityId,
+        gpx: toGpx(fixture.points),
+        overpassResponses: [
+            textResponse('Internal Server Error', 500),
+            jsonResponse({ elements: overpassElements(fixture) }),
+        ],
+    });
+
+    assert.equal(await renamer.generate(), fixture.expected);
+    assert.equal(renamer.overpassRequestCount(), 2);
+    assert.deepEqual(renamer.errors, []);
+});
+
+// A mirror under load answers 200 with a truncated body or a runtime-error
+// page as readily as it answers 504.
+test('treats an unreadable Overpass answer as a busy mirror', async () => {
+    const fixture = loadFixture('loop-with-revisit');
+    const renamer = loadRenamer({
+        activityId: fixture.activityId,
+        gpx: toGpx(fixture.points),
+        overpassResponses: [
+            textResponse('runtime error: Query timed out'),
+            jsonResponse({ elements: overpassElements(fixture) }),
+        ],
+    });
+
+    assert.equal(await renamer.generate(), fixture.expected);
+    assert.equal(renamer.overpassRequestCount(), 2);
+    assert.deepEqual(renamer.errors, []);
 });
 
 test('falls over when an Overpass mirror rejects the request headers', async () => {
@@ -181,6 +246,8 @@ test('does not retry a permanent Overpass rejection', async () => {
     await renamer.generate();
 
     assert.equal(renamer.overpassRequestCount(), 1);
-    assert.ok(renamer.alerts.some(message => message.includes('HTTP 400')));
+    const notice = buildNotice(renamer);
+    assert.match(notice.textContent, /HTTP 400/);
+    assert.match(notice.className, /activity-renamer-status--error/);
     assert.equal(renamer.name, '');
 });

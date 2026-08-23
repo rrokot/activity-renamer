@@ -8,6 +8,11 @@ export function openPanel(renamer) {
     return renamer.panel;
 }
 
+// What the run, or the last panel click, had to say for itself.
+export function buildNotice(renamer) {
+    return renamer.byId('activity-renamer-build-status');
+}
+
 export function panelButtons(renamer) {
     return renamer.panel.querySelectorAll('button');
 }
