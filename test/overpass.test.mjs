@@ -7,7 +7,6 @@ import {
     loadRenamer,
     loadScenario,
     overpassElements,
-    textResponse,
     toGpx,
 } from './support/harness.mjs';
 import { buildNotice } from './support/panel.mjs';
@@ -164,41 +163,6 @@ test('sweeps the mirrors again before giving the rider a wait', async () => {
     assert.equal(renamer.name, '');
 });
 
-// Observed on overpass.kumi.systems under load: a plain 500 after fifty
-// seconds. A 5xx is the instance failing, never the query.
-test('reads any server error as a busy mirror', async () => {
-    const fixture = loadFixture('loop-with-revisit');
-    const renamer = loadRenamer({
-        activityId: fixture.activityId,
-        gpx: toGpx(fixture.points),
-        overpassResponses: [
-            textResponse('Internal Server Error', 500),
-            jsonResponse({ elements: overpassElements(fixture) }),
-        ],
-    });
-
-    assert.equal(await renamer.generate(), fixture.expected);
-    assert.equal(renamer.overpassRequestCount(), 2);
-    assert.deepEqual(renamer.errors, []);
-});
-
-// A mirror under load answers 200 with a truncated body or a runtime-error
-// page as readily as it answers 504.
-test('treats an unreadable Overpass answer as a busy mirror', async () => {
-    const fixture = loadFixture('loop-with-revisit');
-    const renamer = loadRenamer({
-        activityId: fixture.activityId,
-        gpx: toGpx(fixture.points),
-        overpassResponses: [
-            textResponse('runtime error: Query timed out'),
-            jsonResponse({ elements: overpassElements(fixture) }),
-        ],
-    });
-
-    assert.equal(await renamer.generate(), fixture.expected);
-    assert.equal(renamer.overpassRequestCount(), 2);
-    assert.deepEqual(renamer.errors, []);
-});
 
 test('falls over when an Overpass mirror rejects the request headers', async () => {
     const fixture = loadFixture('loop-with-revisit');

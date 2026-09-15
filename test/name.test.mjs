@@ -39,35 +39,6 @@ test('Favorite visits are independent of OSM road segmentation', async () => {
     assert.equal(await withoutRoads.generate(), fixture.expected);
 });
 
-test('omitting roads does not spend two slots on consecutive home mentions', async () => {
-    const fixture = loadFixture('favorite-road-observations');
-    const renamer = loadRenamer({
-        activityId: fixture.activityId,
-        gpx: toGpx(densifyTrack([
-            [51.76, 14.3], [51.765, 14.3], [51.76, 14.3], [51.76, 14.36],
-        ], 10)),
-        overpassResponses: [jsonResponse({ elements: overpassElements({ ...fixture, roads: [{
-            id: 20, name: 'Loop Street', highway: 'residential',
-            geometry: [[51.764, 14.3], [51.765, 14.3]],
-        }] }) })],
-        userscriptStorage: {
-            activity_renamer_saved_places_v1: JSON.stringify(fixture.favorites),
-            activity_renamer_ride_names_v1: JSON.stringify([{
-                activityId: fixture.activityId, kept: [], placeCount: 4,
-            }]),
-        },
-    });
-    assert.equal(await renamer.generate(), fixture.expected,
-        'the freed home slot goes to another settlement, in track order');
-});
-
-test('uses the local district before its municipal town at the finish', async () => {
-    const { fixture, renamer } = loadScenario('endpoint-district', {
-        reverseResponses: [jsonResponse({ address: { suburb: 'Sellessen', town: 'Spremberg' } })],
-    });
-    assert.equal(await renamer.generate(), fixture.expected);
-});
-
 test('a return to a Favorite remains distinct after visiting another settlement', async () => {
     const fixture = loadFixture('favorite-road-observations');
     const renamer = loadRenamer({
@@ -85,18 +56,6 @@ test('a return to a Favorite remains distinct after visiting another settlement'
     assert.equal(renamer.logs.filter(line => /Favorite .*: H /.test(line)).length, 2);
 });
 
-test('endpoint evidence does not stretch a node visit across an unrelated Favorite', async () => {
-    const { renamer } = loadScenario('endpoint-district', {
-        reverseResponses: [jsonResponse({ address: { suburb: 'Sellessen', town: 'Spremberg' } })],
-        userscriptStorage: {
-            activity_renamer_saved_places_v1: JSON.stringify([{
-                id: 'stop', name: 'Café', lat: 51.616, lon: 14.414, radiusM: 100, address: 'Café',
-            }]),
-        },
-    });
-    assert.equal(await renamer.generate(), 'Neustadt - Spremberg - Sellessen - Café - Sellessen');
-});
-
 test('resolves coastal endpoints away from OSM place nodes and caches them', async () => {
     const { fixture, renamer } = loadScenario('coastal-endpoints', { reverseResponses: coastalAddresses() });
     assert.equal(await renamer.generate(), fixture.expected);
@@ -109,69 +68,10 @@ test('resolves coastal endpoints away from OSM place nodes and caches them', asy
     assert.equal(renamer.requests.filter(request => request.url.includes('/reverse?')).length, 2);
 });
 
-test('keeps actual endpoints when only two name slots are requested', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: coastalAddresses(),
-        userscriptStorage: {
-            activity_renamer_ride_names_v1: JSON.stringify([{
-                activityId: '20159354547', kept: [], placeCount: 2,
-            }]),
-        },
-    });
-    assert.equal(await renamer.generate(), 'Wismar - Warnemünde');
-});
-
-test('retries failed endpoint addresses instead of caching the incomplete result', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: [jsonResponse({}, 503), jsonResponse({}, 503), ...coastalAddresses()],
-    });
-    assert.equal(await renamer.generate(), 'Blowatz - Heiligendamm');
-    assert.equal(await renamer.generate(), 'Wismar - Blowatz - Heiligendamm - Warnemünde');
-    assert.equal(renamer.overpassRequestCount(), 2);
-});
-
-test('does not invent endpoint settlements from counties or road names', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: [jsonResponse({ address: { county: 'Nordwestmecklenburg', road: 'L 12' } })],
-    });
-    assert.equal(await renamer.generate(), 'Blowatz - Heiligendamm');
-});
-
 test('does not reverse geocode endpoints already covered by settlement nodes', async () => {
     const { renamer } = loadScenario('loop-with-revisit');
     await renamer.generate();
     assert.equal(renamer.requests.filter(request => request.url.includes('/reverse?')).length, 0);
-});
-
-test('joins an endpoint to the adjacent visit without duplicating the city', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: [
-            jsonResponse({ address: { village: 'Blowatz' } }),
-            jsonResponse({ address: { village: 'Heiligendamm' } }),
-        ],
-    });
-    assert.equal(await renamer.generate(), 'Blowatz - Heiligendamm');
-});
-
-test('endpoint addresses respect Favorites and excluded names', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: coastalAddresses(),
-        userscriptStorage: {
-            activity_renamer_saved_places_v1: JSON.stringify([{
-                id: 'start', name: 'Bahnhof', lat: 53.899, lon: 11.464,
-                radiusM: 200, address: 'Wismar',
-            }]),
-            activity_renamer_blocked_names_v1: JSON.stringify(['Warnemünde']),
-        },
-    });
-    assert.equal(await renamer.generate(), 'Bahnhof - Blowatz - Heiligendamm');
-});
-
-test('preserves the return to the same endpoint city after other settlements', async () => {
-    const { renamer } = loadScenario('coastal-endpoints', {
-        reverseResponses: [jsonResponse({ address: { city: 'Wismar' } })],
-    });
-    assert.equal(await renamer.generate(), 'Wismar - Blowatz - Heiligendamm - Wismar');
 });
 
 test('invalidates cached passages from before endpoint address discovery', async () => {

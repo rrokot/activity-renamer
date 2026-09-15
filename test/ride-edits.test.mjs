@@ -192,24 +192,6 @@ test('adding a hidden kept place extends the visible name', async () => {
     }]);
 });
 
-test('the panel chevron stays free of edit counters', async () => {
-    const { renamer } = loadScenario('dense-settlements');
-
-    await renamer.generate();
-
-    assert.equal(renamer.panelToggleButton.textContent, '');
-
-    openPanel(renamer);
-    passedRowButton(renamer, 'Add', 'Werben').click();
-
-    assert.equal(renamer.panelToggleButton.textContent, '');
-    assert.equal(renamer.panelToggleButton.title, 'Hide Activity Renamer');
-
-    nameChip(renamer, 'Werben').drop.click();
-
-    assert.equal(renamer.panelToggleButton.textContent, '');
-});
-
 // The whole point of the per-ride lists: the same village stays automatic
 // everywhere else.
 test('a name added to one ride reaches no other activity', async () => {

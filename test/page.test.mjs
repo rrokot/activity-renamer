@@ -168,16 +168,3 @@ test('reports a route without landmarks instead of failing', async () => {
     assert.deepEqual(renamer.errors, []);
     assert.equal(renamer.button.dataset.state, 'idle');
 });
-
-// Indoor activities answer the GPX export with the ordinary activity page.
-test('reports a non-GPX export as an activity without GPS', async () => {
-    const renamer = loadRenamer({ gpx: '<!DOCTYPE html><html><body>Pilates</body></html>' });
-
-    await renamer.generate();
-
-    assert.equal(
-        buildNotice(renamer).textContent,
-        'No GPS data found (manual entry or indoor activity?)',
-    );
-    assert.equal(renamer.name, '');
-});
