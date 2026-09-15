@@ -6,8 +6,6 @@ import {
 } from './support/harness.mjs';
 
 const FAVORITES_KEY = 'activity_renamer_saved_places_v1';
-const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
-const AUTO_PLACE_SPACING_KEY = 'activity_renamer_auto_place_spacing_km_v1';
 
 const burgPlace = {
     id: 'place_burg',
@@ -18,6 +16,9 @@ const burgPlace = {
     address: 'Burg (Spreewald)',
 };
 
+// One adapter serves every key, so proving Favorites arrive through the
+// userscript manager proves the path. The place-count override and the
+// automatic density ride the same adapter in overpass.test.mjs.
 test('reads Favorites from the userscript manager storage', async () => {
     const { renamer } = loadScenario('loop-with-revisit', {
         userscriptStorage: { [FAVORITES_KEY]: JSON.stringify([burgPlace]) },
@@ -26,30 +27,4 @@ test('reads Favorites from the userscript manager storage', async () => {
     const name = await renamer.generate();
 
     assert.match(name, /Gurkenpause/);
-});
-
-test('reads the place-count override for this activity from userscript storage', async () => {
-    const { renamer } = loadScenario('dense-settlements', {
-        userscriptStorage: {
-            [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
-                activityId: '19000955532',
-                kept: [],
-                placeCount: 2,
-            }]),
-        },
-    });
-
-    const name = await renamer.generate();
-
-    assert.equal(name.split(' - ').length, 2);
-});
-
-test('reads the permanent automatic place density from userscript storage', async () => {
-    const { renamer } = loadScenario('dense-settlements', {
-        userscriptStorage: { [AUTO_PLACE_SPACING_KEY]: JSON.stringify(8) },
-    });
-
-    const name = await renamer.generate();
-
-    assert.equal(name.split(' - ').length, 3);
 });

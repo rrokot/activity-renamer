@@ -65,53 +65,52 @@ test('discards a cache written under different naming settings', async () => {
     assert.equal(renamer.overpassRequestCount(), 1, 'a stale signature forces a refetch');
 });
 
-test('reuses the feature cache after the ride place-count override changes', async () => {
-    const first = loadScenario('dense-settlements', {
-        userscriptStorage: {
+// Place count and density pick among passages already fetched, so neither
+// belongs in the cache signature and neither may send the rider to Overpass.
+const SELECTION_SETTINGS = [
+    {
+        what: 'the ride place-count override',
+        before: {
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532', kept: [], placeCount: 3,
             }]),
         },
-    });
-    await first.renamer.generate();
-
-    const cacheKey = `activity_renamer_features_v2_${first.fixture.activityId}`;
-    const cached = first.renamer.localStorage.getItem(cacheKey);
-    const second = loadScenario('dense-settlements', {
-        storage: { [cacheKey]: cached },
-        userscriptStorage: {
+        after: {
             [ACTIVITY_OVERRIDES_KEY]: JSON.stringify([{
                 activityId: '19000955532', kept: [], placeCount: 12,
             }]),
         },
+        assertName: (name, fixture) => assert.ok(
+            name.split(' - ').length > fixture.expected.split(' - ').length,
+            'the override can use more landmarks than the automatic calculation',
+        ),
+    },
+    {
+        what: 'the automatic place density',
+        before: {},
+        after: { [AUTO_PLACE_SPACING_KEY]: JSON.stringify(8) },
+        assertName: name => assert.equal(name.split(' - ').length, 3),
+    },
+];
+
+for (const { what, before, after, assertName } of SELECTION_SETTINGS) {
+    test(`reuses the feature cache after ${what} changes`, async () => {
+        const first = loadScenario('dense-settlements', { userscriptStorage: before });
+        await first.renamer.generate();
+
+        const cacheKey = `activity_renamer_features_v2_${first.fixture.activityId}`;
+        const second = loadScenario('dense-settlements', {
+            storage: { [cacheKey]: first.renamer.localStorage.getItem(cacheKey) },
+            userscriptStorage: after,
+        });
+
+        const name = await second.renamer.generate();
+
+        assertName(name, second.fixture);
+        assert.equal(second.renamer.overpassRequestCount(), 0,
+            `${what} does not invalidate cached OSM passages`);
     });
-
-    const expandedName = await second.renamer.generate();
-    assert.ok(
-        expandedName.split(' - ').length > second.fixture.expected.split(' - ').length,
-        'the override can use more landmarks than the automatic calculation',
-    );
-    assert.equal(second.renamer.overpassRequestCount(), 0,
-        'the activity place-count override does not invalidate cached OSM passages');
-});
-
-test('reuses the feature cache after the automatic place density changes', async () => {
-    const first = loadScenario('dense-settlements');
-    await first.renamer.generate();
-
-    const cacheKey = `activity_renamer_features_v2_${first.fixture.activityId}`;
-    const cached = first.renamer.localStorage.getItem(cacheKey);
-    const second = loadScenario('dense-settlements', {
-        storage: { [cacheKey]: cached },
-        userscriptStorage: { [AUTO_PLACE_SPACING_KEY]: JSON.stringify(8) },
-    });
-
-    const name = await second.renamer.generate();
-
-    assert.equal(name.split(' - ').length, 3);
-    assert.equal(second.renamer.overpassRequestCount(), 0,
-        'density changes only the selection and keep cached OSM passages');
-});
+}
 
 test('falls over to another Overpass mirror when one is busy', async () => {
     const fixture = loadFixture('loop-with-revisit');
