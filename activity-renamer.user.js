@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.29
+// @version      0.1.31
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -72,6 +72,7 @@
 
     const API_URL = {
         nominatimSearch: 'https://nominatim.openstreetmap.org/search',
+        nominatimReverse: 'https://nominatim.openstreetmap.org/reverse',
     };
     // Tried in order, one per attempt: a busy or rate-limiting instance is
     // usually answered instantly by the next mirror. lz4 leads because it
@@ -972,6 +973,7 @@
             .map(key => `${key}=${CONFIG[key]}`)
             .concat(`placeTypes=${PLACE_NODE_TYPES.join('+')}`)
             .concat(`roadTypes=${Object.keys(ROAD_TYPE_PRIORITY).join('+')}`)
+            .concat(`endpointAddresses=2:${SETTLEMENT_ADDRESS_FIELDS.join('+')}`)
             .join(',');
     }
 
@@ -1432,7 +1434,8 @@
         if (!commonIsValid) return false;
         if (passage.featureKind === 'place') {
             return typeof passage.placeId === 'string'
-                && PLACE_NODE_TYPES.includes(passage.placeType);
+                && (PLACE_NODE_TYPES.includes(passage.placeType)
+                    || (passage.endpoint === true && SETTLEMENT_ADDRESS_FIELDS.includes(passage.placeType)));
         }
         if (passage.featureKind === 'road') {
             return typeof passage.roadId === 'string'
@@ -1482,12 +1485,13 @@
 
         const features = await fetchRouteFeatures(track, onRetry);
         const placePassages = passagesNearPlaces(track, features.places);
+        const endpointsComplete = await addEndpointPlaces(track, placePassages);
         const roadPassages = passagesNearRoads(track, features.roads);
         const passages = placePassages.concat(roadPassages).sort(byTrackOrder);
         // A route with nothing named beside it is worth asking about again:
         // caching the empty answer would outlive an Overpass mirror that
         // simply had no data to give, or an OSM gap somebody later filled.
-        if (passages.length > 0) {
+        if (passages.length > 0 && endpointsComplete) {
             cacheRoutePassages(
                 activityId,
                 track,
@@ -1504,12 +1508,63 @@
         };
     }
 
-    // Nominatim address fields are used only to suggest a readable default
-    // when the user searches for a place of their own. Activity names come from OSM
-    // place nodes, never from reverse geocoding.
-    const LOCAL_SETTLEMENT_FIELDS = ['hamlet', 'village', 'town'];
-    const PRIMARY_ADDRESS_FIELDS = ['hamlet', 'village', 'town', 'city'];
-    const DISTRICT_ADDRESS_FIELDS = ['city_district', 'suburb'];
+    // Route interiors use nearby place nodes. At the two ends, an address can
+    // identify the settlement even when its centre is far from the track.
+    // Address specificity is independent of whether the containing municipality
+    // is tagged town or city. Local settlements and districts precede both.
+    // The same hierarchy names searched addresses and route endpoints.
+    const SETTLEMENT_ADDRESS_FIELDS = ['hamlet', 'village', 'suburb', 'city_district', 'town', 'city'];
+
+    async function addEndpointPlaces(track, passages) {
+        let complete = true;
+        const results = new Map();
+        for (const index of new Set([0, track.latitudes.length - 1])) {
+            if (passages.some(passage => passage.start <= index && passage.end >= index)) continue;
+            const lat = track.latitudes[index];
+            const lon = track.longitudes[index];
+            const params = new URLSearchParams({
+                lat: String(lat), lon: String(lon), format: 'jsonv2',
+                addressdetails: '1', zoom: '18', layer: 'address', 'accept-language': 'de',
+            });
+            try {
+                const key = params.toString();
+                let data = results.get(key);
+                if (!results.has(key)) {
+                    const response = await requestNominatim(`${API_URL.nominatimReverse}?${params}`);
+                    if (response.status === 404) {
+                        results.set(key, null);
+                        continue;
+                    }
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    data = await response.json();
+                    if (!data?.address || typeof data.address !== 'object' || Array.isArray(data.address)) {
+                        throw new Error('Invalid endpoint address');
+                    }
+                    results.set(key, data);
+                }
+                const placeType = SETTLEMENT_ADDRESS_FIELDS.find(field =>
+                    cleanOptionalPlaceName(data?.address?.[field]));
+                if (!placeType) continue;
+                const name = cleanOptionalPlaceName(data.address[placeType]);
+                // An address is evidence at this point, not proof that the
+                // intervening track was inside the settlement. Never enlarge a
+                // node passage: Favorite matching must use measured proximity.
+                passages.push({
+                    baseName: name, address: formatAddress(data.address) || name,
+                    placeId: `endpoint_${index}`, placeType, featureKind: 'place', endpoint: true,
+                    start: index, end: index, anchor: index, lat, lon, distanceM: 0,
+                    ...passageDistances(track, index, index),
+                });
+                log(`Endpoint ${index === 0 ? 'start' : 'finish'}: ${name}`);
+            } catch (error) {
+                // Keep the available route useful, but retry missing endpoint
+                // addresses on the next build instead of caching a partial name.
+                complete = false;
+                log(`Endpoint address unavailable: ${errorMessage(error)}`);
+            }
+        }
+        return complete;
+    }
 
     function addressPlaceName(address, fields) {
         if (!address) return null;
@@ -1545,9 +1600,7 @@
     // The most specific settlement wins: a village before its district, a
     // district before the city it belongs to.
     function suggestedPlaceName(address) {
-        return addressPlaceName(address, LOCAL_SETTLEMENT_FIELDS)
-            || addressPlaceName(address, DISTRICT_ADDRESS_FIELDS)
-            || addressPlaceName(address, PRIMARY_ADDRESS_FIELDS);
+        return addressPlaceName(address, SETTLEMENT_ADDRESS_FIELDS);
     }
 
     function candidateFromSearchResult(result) {
@@ -1584,31 +1637,6 @@
         return data.map(candidateFromSearchResult).filter(Boolean);
     }
 
-    function closestFavoriteForPassage(passage, track, favorites) {
-        let best = null;
-        for (const favorite of favorites) {
-            let distanceM = Infinity;
-            let closestIndex = passage.start;
-            for (let index = passage.start; index <= passage.end; index++) {
-                const pointDistanceM = haversineKm(
-                    favorite.lat,
-                    favorite.lon,
-                    track.latitudes[index],
-                    track.longitudes[index],
-                ) * 1000;
-                if (pointDistanceM < distanceM) {
-                    distanceM = pointDistanceM;
-                    closestIndex = index;
-                }
-                if (distanceM < 0.5) break;
-            }
-            if (distanceM <= favorite.radiusM && (!best || distanceM < best.distanceM)) {
-                best = { favorite, distanceM, index: closestIndex };
-            }
-        }
-        return best;
-    }
-
     function favoriteVisits(track, favorites) {
         return favorites
             .flatMap(favorite => visitsFromDistances(
@@ -1617,10 +1645,6 @@
                 { favorite },
             ))
             .sort(byTrackOrder);
-    }
-
-    function trackRangesOverlap(first, second) {
-        return first.start <= second.end && second.start <= first.end;
     }
 
     // The map viewport is determined by the route's geographical extent, not
@@ -1880,25 +1904,86 @@
                 Math.min(automaticLimit, placeIndices.length + roadIndices.length),
             );
         }
-        return runs
-            .filter((run, index) =>
-                endpointIndices.has(index)
-                || selectedForced.has(index)
-                || selectedAutomatic.has(index))
-            .map(run => ({ ...run }));
+        const selected = new Set([...endpointIndices, ...selectedForced, ...selectedAutomatic]);
+        const narrative = indices => mergeAdjacentEvents(runs.filter((run, index) => indices.has(index)));
+        const targetSize = selected.size;
+        let result = narrative(selected);
+        // A slot belongs to a narrative visit, not a raw road observation.
+        // Omitting streets can expose repeated evidence for the same visit.
+        // Spend freed slots on other places. Distinct visits remain distinct
+        // even if the selected count hides the settlement between them.
+        while (result.length < targetSize) {
+            const fitting = candidates => candidates.filter(index => {
+                if (selected.has(index)) return false;
+                const count = narrative(new Set([...selected, index])).length;
+                return count > result.length && count <= targetSize;
+            });
+            const places = fitting(placeIndices);
+            const candidates = places.length ? places : fitting(roadIndices);
+            if (candidates.length === 0) break;
+            fillCoverageSelection(runs, track, candidates, selected, selected.size + 1);
+            result = narrative(selected);
+        }
+        return result;
     }
 
-    // Every event that may reach the name, in track order: one per passage the
-    // user has not blocked, plus the Favorites the passages never covered.
-    // `suppressed` collects what the block list took out, for the log.
+    // Features are evidence; visits are the units of the narrative. Every
+    // Favorite gets its own measured visits, independent of how many OSM ways
+    // cross its radius. Matching a feature suppresses that feature's label,
+    // never creates another copy of the Favorite or moves its visit anchor.
+    // The panel and the name builder consume this same view.
+    function routeLandmarks(passages, track, favorites) {
+        const visits = favoriteVisits(track, favorites);
+        const landmarks = passages.flatMap(passage => {
+            if (visits.some(visit => visit.start <= passage.end && passage.start <= visit.end)) return [];
+            return [{ passage, match: null, name: passage.baseName }];
+        });
+        for (const visit of visits) {
+            const { favorite } = visit;
+            landmarks.push({
+                passage: {
+                    ...visit,
+                    baseName: favorite.name,
+                    address: favorite.address,
+                    lat: favorite.lat,
+                    lon: favorite.lon,
+                    featureKind: 'favorite',
+                },
+                match: { favorite, distanceM: visit.distanceM },
+                name: favorite.name,
+            });
+        }
+        return landmarks.sort((a, b) => byTrackOrder(a.passage, b.passage));
+    }
+
+    // Address evidence at a route end can corroborate the adjacent settlement
+    // visit. Merge those labels only after geometric Favorite matching; the
+    // measured passage ranges remain untouched in the cache and editor.
+    function joinEndpointEvidence(events) {
+        const named = events.filter(event => event.featureKind !== 'road');
+        const removed = new Set();
+        for (let i = 0; i < named.length; i++) {
+            const event = named[i];
+            if (!event.endpoint) continue;
+            const adjacent = i === 0 ? named[i + 1] : i === named.length - 1 ? named[i - 1] : null;
+            if (!adjacent || adjacent.endpoint || adjacent.name !== event.name) continue;
+            adjacent.orderIndex = event.orderIndex;
+            adjacent.lat = event.lat;
+            adjacent.lon = event.lon;
+            adjacent.fromKm = Math.min(adjacent.fromKm, event.fromKm);
+            adjacent.toKm = Math.max(adjacent.toKm, event.toKm);
+            removed.add(event);
+        }
+        return events.filter(event => !removed.has(event)).sort((a, b) => a.orderIndex - b.orderIndex);
+    }
+
+    // Filtering and per-ride choices act on visits, not on their source ways.
     function routeEvents(passages, track, preferences, shouldLog) {
         const { favorites, blockedNames, kept: keptNames } = preferences;
-        const visits = favoriteVisits(track, favorites);
         const blockedKeys = nameKeys(blockedNames);
         const keptKeys = nameKeys(keptNames);
-        const coveredVisits = new Set();
         const suppressed = { blocked: new Set() };
-        const events = [];
+        const visible = [];
         // What this ride says wins over what the block list says about every
         // ride: the narrower answer is the one the user gave last.
         const nameState = name => {
@@ -1906,9 +1991,7 @@
             return hasNameKey(name, blockedKeys) ? 'blocked' : null;
         };
 
-        for (const passage of passages) {
-            const match = closestFavoriteForPassage(passage, track, favorites);
-            const name = match?.favorite.name || passage.baseName;
+        for (const { passage, match, name } of routeLandmarks(passages, track, favorites)) {
             if (!name) continue;
             const hidden = nameState(name);
             if (hidden) {
@@ -1916,61 +1999,39 @@
                 continue;
             }
 
-            if (match) {
-                for (const visit of visits) {
-                    if (visit.favorite.id === match.favorite.id
-                        && trackRangesOverlap(visit, passage)) {
-                        coveredVisits.add(visit);
-                    }
-                }
-                if (shouldLog) {
-                    log(`Favorite ${rangeLabel(passage)}: ${match.favorite.name}`
-                        + ` (${match.distanceM.toFixed(0)} m from favorite address)`);
-                }
+            if (match && shouldLog) {
+                log(`Favorite ${rangeLabel(passage)}: ${name}`
+                    + ` (${match.distanceM.toFixed(0)} m from favorite address)`);
             }
 
-            events.push({
+            visible.push({
                 name,
                 km: passage.km,
                 fromKm: passage.fromKm,
                 toKm: passage.toKm,
                 favorite: Boolean(match),
-                orderIndex: match?.index ?? passage.anchor,
-                lat: match?.favorite.lat ?? passage.lat,
-                lon: match?.favorite.lon ?? passage.lon,
-                featureKind: match ? 'favorite' : passage.featureKind,
+                orderIndex: passage.anchor,
+                lat: passage.lat,
+                lon: passage.lon,
+                featureKind: passage.featureKind,
                 roadType: passage.roadType || null,
+                endpoint: passage.endpoint === true,
                 kept: false,
             });
         }
 
-        for (const visit of visits) {
-            if (coveredVisits.has(visit)) continue;
-            const hidden = nameState(visit.favorite.name);
-            if (hidden) {
-                suppressed[hidden].add(visit.favorite.name);
-                continue;
-            }
-            if (shouldLog) {
-                log(`Favorite ${rangeLabel(visit)}: ${visit.favorite.name}`
-                    + ` (${visit.distanceM.toFixed(0)} m from favorite address; full-track visit)`);
-            }
-            events.push({
-                name: visit.favorite.name,
-                km: visit.km,
-                fromKm: visit.fromKm,
-                toKm: visit.toKm,
-                favorite: true,
-                orderIndex: visit.index,
-                lat: visit.favorite.lat,
-                lon: visit.favorite.lon,
-                featureKind: 'favorite',
-                roadType: null,
-                kept: false,
-            });
+        const events = joinEndpointEvidence(visible);
+        // Record settlement transitions before selecting the short narrative.
+        // Road observations alone do not separate two mentions of one place;
+        // visiting another named place does, even if it later loses its slot.
+        let previousPlace = null;
+        let visitGroup = 0;
+        for (const event of events) {
+            if (event.featureKind === 'road') continue;
+            if (event.name !== previousPlace) visitGroup++;
+            event.visitGroup = visitGroup;
+            previousPlace = event.name;
         }
-
-        events.sort((a, b) => a.orderIndex - b.orderIndex);
         let keptIndex = 0;
         for (const event of events) {
             if (keptIndex < keptNames.length
@@ -1988,7 +2049,7 @@
         const runs = [];
         for (const event of events) {
             const last = runs[runs.length - 1];
-            if (last?.name !== event.name) {
+            if (last?.name !== event.name || last.visitGroup !== event.visitGroup) {
                 runs.push({ ...event });
                 continue;
             }
@@ -2042,7 +2103,8 @@
         const placePassages = passages.filter(passage => passage.featureKind === 'place');
         for (const passage of placePassages) {
             log(`Nearby place ${rangeLabel(passage)}: ${passage.baseName}`
-                + ` (${passage.distanceM.toFixed(0)} m from OSM ${passage.placeType} node)`);
+                + (passage.endpoint ? ` (endpoint address, ${passage.placeType})`
+                    : ` (${passage.distanceM.toFixed(0)} m from OSM ${passage.placeType} node)`));
         }
         const roadPassageCount = passages.length - placePassages.length;
         if (roadPassageCount > 0) {
@@ -2715,10 +2777,7 @@
         if (!analysis) return null;
 
         const favorites = loadFavorites();
-        const landmarks = analysis.passages.map(passage => {
-            const match = closestFavoriteForPassage(passage, analysis.track, favorites);
-            return { passage, match, name: match?.favorite.name || passage.baseName };
-        });
+        const landmarks = routeLandmarks(analysis.passages, analysis.track, favorites);
         const byName = new Map();
         for (const landmark of landmarks) {
             if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);

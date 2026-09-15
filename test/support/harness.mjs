@@ -134,6 +134,7 @@ export { jsonResponse, textResponse, HttpError };
  * @param {string} [options.gpx] GPX body served for the export request
  * @param {Array}  [options.overpassResponses] queued Overpass replies (last one repeats)
  * @param {Array}  [options.nominatimResponses] queued Nominatim replies (last one repeats)
+ * @param {Array}  [options.reverseResponses] queued endpoint address replies (last one repeats)
  * @param {boolean} [options.withRoute] whether the editor shows a recorded route
  * @param {string} [options.sportType] value of the editor's sport-type field
  * @param {object} [options.storage] initial localStorage contents
@@ -146,6 +147,7 @@ export function loadRenamer(options = {}) {
         gpx = toGpx([[51.75, 14.33], [51.76, 14.34]]),
         overpassResponses = [jsonResponse({ elements: [] })],
         nominatimResponses = [jsonResponse([])],
+        reverseResponses = [jsonResponse({ error: 'No coverage' }, 404)],
         storage = {},
     } = options;
 
@@ -166,6 +168,7 @@ export function loadRenamer(options = {}) {
 
     const overpassQueue = overpassResponses.slice();
     const nominatimQueue = nominatimResponses.slice();
+    const reverseQueue = reverseResponses.slice();
     const nextFrom = queue => (queue.length > 1 ? queue.shift() : queue[0]);
 
     const localStorage = createLocalStorage(storage);
@@ -188,7 +191,7 @@ export function loadRenamer(options = {}) {
             return typeof response === 'function' ? response(init) : response;
         }
         if (url.includes('nominatim')) {
-            const response = nextFrom(nominatimQueue);
+            const response = nextFrom(url.includes('/reverse?') ? reverseQueue : nominatimQueue);
             if (response instanceof Error) throw response;
             return typeof response === 'function' ? response(init) : response;
         }

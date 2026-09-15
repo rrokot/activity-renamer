@@ -1,0 +1,20 @@
+{
+  "activityId": "20049710190",
+  "description": "One home visit overlaps several OSM ways, including a long way that reaches the next settlement. Road segmentation must not create Favorite visits or move their anchor.",
+  "expected": "H - Neustadt - Spremberg - Sellessen",
+  "stepM": 10,
+  "favorites": [
+    { "id": "home", "name": "H", "lat": 51.76, "lon": 14.3, "radiusM": 200, "address": "Home" }
+  ],
+  "places": [
+    { "id": 1, "name": "Neustadt", "place": "village", "lat": 51.76, "lon": 14.32 },
+    { "id": 2, "name": "Spremberg", "place": "town", "lat": 51.76, "lon": 14.34 },
+    { "id": 3, "name": "Sellessen", "place": "village", "lat": 51.76, "lon": 14.36 }
+  ],
+  "roads": [
+    { "id": 10, "name": "First Street", "highway": "residential", "geometry": [[51.76, 14.3], [51.76, 14.301]] },
+    { "id": 11, "name": "Second Street", "highway": "residential", "geometry": [[51.76, 14.301], [51.76, 14.302]] },
+    { "id": 12, "name": "Long Street", "highway": "residential", "geometry": [[51.76, 14.302], [51.76, 14.325]] }
+  ],
+  "waypoints": [[51.76, 14.3], [51.76, 14.36]]
+}

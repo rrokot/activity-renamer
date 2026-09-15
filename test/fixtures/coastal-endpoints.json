@@ -1,0 +1,10 @@
+{
+  "activityId": "20159354547",
+  "expected": "Wismar - Blowatz - Heiligendamm - Warnemünde",
+  "stepM": 100,
+  "places": [
+    { "id": 1, "name": "Blowatz", "place": "village", "lat": 53.989, "lon": 11.533 },
+    { "id": 2, "name": "Heiligendamm", "place": "village", "lat": 54.142, "lon": 11.843 }
+  ],
+  "waypoints": [[53.899, 11.464], [53.989, 11.533], [54.142, 11.843], [54.176, 12.089]]
+}

@@ -1,0 +1,12 @@
+{
+  "activityId": "20049710191",
+  "description": "A municipal town is passed before its outlying settlement. The finish address belongs to that district, not to another visit to the town centre.",
+  "expected": "Neustadt - Spremberg - Sellessen",
+  "stepM": 20,
+  "places": [
+    { "id": 1, "name": "Neustadt", "place": "village", "lat": 51.5, "lon": 14.42 },
+    { "id": 2, "name": "Spremberg", "place": "town", "lat": 51.573, "lon": 14.38 },
+    { "id": 3, "name": "Sellessen", "place": "village", "lat": 51.608, "lon": 14.414 }
+  ],
+  "waypoints": [[51.5, 14.42], [51.573, 14.38], [51.608, 14.414], [51.625, 14.414]]
+}

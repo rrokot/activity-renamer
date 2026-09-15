@@ -9,8 +9,11 @@ places along the route.
 
 - Orders visited places along the route.
 - Merges one continuous visit but preserves later revisits.
+- Counts Favorite visits from the track, independently of nearby road segments.
 - Prioritizes settlements; named roads fill gaps.
 - Selects geographically spread places and keeps the route ends.
+- Resolves missing start and finish settlements from their coordinates using
+  Nominatim, including named suburbs whose centres are away from the track.
 - Applies Favorites and manual choices; removes middle places if the title is too
   long.
 
