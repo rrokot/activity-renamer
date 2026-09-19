@@ -146,6 +146,35 @@ test('names the route anyway when no eviction can make room', async () => {
     assert.deepEqual(featureKeys(renamer), [], 'nothing was left claiming to be cached');
 });
 
+// Overpass answers for the whole route and Nominatim only for its two ends,
+// so a bad minute at Nominatim must not send the rider back to Overpass for
+// landmarks it already gave.
+test('keeps the Overpass answer when only an endpoint address is owed', async () => {
+    const unreachable = () => jsonResponse({ error: 'busy' }, 503);
+    const { fixture, renamer } = loadScenario('coastal-endpoints', {
+        reverseResponses: [
+            unreachable(),
+            unreachable(),
+            jsonResponse({ address: { city: 'Wismar', state: 'Mecklenburg-Vorpommern' } }),
+            jsonResponse({
+                address: { suburb: 'Warnemünde', city_district: 'Ortsamt 1', city: 'Rostock' },
+            }),
+        ],
+    });
+
+    const withoutEnds = await renamer.generate();
+    const complete = await renamer.generate();
+
+    assert.notEqual(withoutEnds, fixture.expected, 'the first build is short of both endpoints');
+    assert.equal(complete, fixture.expected, 'the second build names the ends the first could not');
+    assert.equal(renamer.overpassRequestCount(), 1, 'the landmarks were asked for once');
+    assert.equal(
+        renamer.requests.filter(request => request.url.includes('/reverse?')).length,
+        4,
+        'only the two addresses Nominatim owed were asked for again',
+    );
+});
+
 test('discards a cache written under different naming settings', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const cacheKey = `activity_renamer_features_v2_${fixture.activityId}`;

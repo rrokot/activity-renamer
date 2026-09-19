@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.34
+// @version      0.1.35
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -1567,6 +1567,7 @@
         const isValid = value.signature === trackSignature(track)
             && Number.isFinite(value.savedAt)
             && Date.now() - value.savedAt <= maxAge
+            && typeof value.endpointsComplete === 'boolean'
             && Array.isArray(value.passages)
             && value.passages.every(passage => isValidCachedPassage(passage, track.latitudes.length));
         if (!isValid) {
@@ -1576,7 +1577,7 @@
         return value;
     }
 
-    function cacheRoutePassages(activityId, track, passages, placeCount, roadCount) {
+    function cacheRoutePassages(activityId, track, entry) {
         // Room for this entry among the newest; then, if the store is full
         // regardless, room made by halving what the first pass left behind.
         pruneRouteFeatureCache(CONFIG.featureCacheEntries - 1);
@@ -1584,18 +1585,47 @@
             routeFeatureCacheKey(activityId),
             {
                 signature: trackSignature(track),
-                savedAt: Date.now(),
-                passages,
-                placeCount,
-                roadCount,
+                // Age counts from the Overpass answer the passages came from,
+                // so a rewrite that only owed an endpoint address cannot keep
+                // a month-old view of the map alive by being retried.
+                savedAt: entry.savedAt ?? Date.now(),
+                passages: entry.passages,
+                placeCount: entry.placeCount,
+                roadCount: entry.roadCount,
+                endpointsComplete: entry.endpointsComplete,
             },
             () => pruneRouteFeatureCache(Math.floor(routeFeatureCacheKeys().length / 2)),
         );
     }
 
+    // Overpass answers for the whole route at once, Nominatim only for its two
+    // ends, so an entry held back by a missing endpoint address still carries
+    // everything Overpass said. Reading the passages back splits them the way
+    // they were collected, because an endpoint is looked for among places
+    // alone: a road beside the finish must not stand in for the settlement.
+    async function routePassageSources(track, cached, onRetry) {
+        if (cached) {
+            return {
+                placePassages: cached.passages.filter(passage => passage.featureKind === 'place'),
+                roadPassages: cached.passages.filter(passage => passage.featureKind === 'road'),
+                placeCount: cached.placeCount,
+                roadCount: cached.roadCount,
+                savedAt: cached.savedAt,
+            };
+        }
+        const features = await fetchRouteFeatures(track, onRetry);
+        return {
+            placePassages: passagesNearPlaces(track, features.places),
+            roadPassages: passagesNearRoads(track, features.roads),
+            placeCount: features.places.length,
+            roadCount: features.roads.length,
+            savedAt: undefined,
+        };
+    }
+
     async function loadRoutePassages(activityId, track, onRetry) {
         const cached = cachedRoutePassages(activityId, track);
-        if (cached) {
+        if (cached?.endpointsComplete) {
             return {
                 passages: cached.passages,
                 cached: true,
@@ -1604,28 +1634,26 @@
             };
         }
 
-        const features = await fetchRouteFeatures(track, onRetry);
-        const placePassages = passagesNearPlaces(track, features.places);
-        const endpointsComplete = await addEndpointPlaces(track, placePassages);
-        const roadPassages = passagesNearRoads(track, features.roads);
-        const passages = placePassages.concat(roadPassages).sort(byTrackOrder);
+        const source = await routePassageSources(track, cached, onRetry);
+        const endpointsComplete = await addEndpointPlaces(track, source.placePassages);
+        const passages = source.placePassages.concat(source.roadPassages).sort(byTrackOrder);
         // A route with nothing named beside it is worth asking about again:
         // caching the empty answer would outlive an Overpass mirror that
         // simply had no data to give, or an OSM gap somebody later filled.
-        if (passages.length > 0 && endpointsComplete) {
-            cacheRoutePassages(
-                activityId,
-                track,
+        if (passages.length > 0) {
+            cacheRoutePassages(activityId, track, {
+                savedAt: source.savedAt,
                 passages,
-                features.places.length,
-                features.roads.length,
-            );
+                placeCount: source.placeCount,
+                roadCount: source.roadCount,
+                endpointsComplete,
+            });
         }
         return {
             passages,
-            cached: false,
-            placeCount: features.places.length,
-            roadCount: features.roads.length,
+            cached: Boolean(cached),
+            placeCount: source.placeCount,
+            roadCount: source.roadCount,
         };
     }
 
