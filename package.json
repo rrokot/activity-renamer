@@ -5,6 +5,11 @@
     "description": "Userscript that names a Strava activity after the places its route passed",
     "type": "module",
     "scripts": {
-        "test": "node --test \"test/*.test.mjs\""
+        "test": "node --test \"test/*.test.mjs\"",
+        "test:watch": "node --test --watch \"test/*.test.mjs\"",
+        "coverage": "node --test --experimental-test-coverage \"test/*.test.mjs\"",
+        "bench": "node test/bench/compare.mjs",
+        "dev:wrapper": "node scripts/dev-wrapper.mjs",
+        "version": "node scripts/sync-version.mjs && git add activity-renamer.user.js"
     }
 }

@@ -275,7 +275,9 @@ export function loadRenamer(options = {}) {
 
     FakeMutationObserver.instances.length = 0;
     const initialization = vm.runInNewContext(readFileSync(userscriptPath, 'utf8'), sandbox, {
-        filename: 'activity-renamer.user.js',
+        // The absolute path is what makes `npm run coverage` attribute the
+        // sandboxed script to the file on disk; a bare name is filtered out.
+        filename: userscriptPath,
     });
     const ready = Promise.resolve(initialization);
 

@@ -7,10 +7,13 @@ installation, usage and user-visible behaviour.
 
 - `activity-renamer.user.js` is the complete userscript and the only production
   source file.
-- `package.json` contains the matching package version and the test command.
+- `package.json` contains the matching package version and the commands below.
 - `test/*.test.mjs` contains behavioural tests.
 - `test/support/` contains the DOM, panel and userscript harness.
 - `test/fixtures/` contains readable route scenarios.
+- `test/bench/` names every fixture with two revisions and reports the
+  differences.
+- `scripts/` holds the release and local-development helpers.
 
 The production script intentionally has no runtime dependencies or build step.
 Keep it directly installable in Tampermonkey.
@@ -31,6 +34,14 @@ When the source is loaded from a local wrapper through `@require`, Tampermonkey
 uses the wrapper's metadata. The wrapper must repeat every required `@grant`,
 `@connect`, `@match` and `@run-at`; the metadata inside the required file is
 ignored for permissions.
+
+Generate the wrapper instead of maintaining that copy by hand:
+
+    npm run dev:wrapper
+
+It writes `activity-renamer.dev.user.js` from the source metadata, dropping the
+install URLs so the local copy does not update itself from GitHub. Install it
+in Tampermonkey once; it then serves the working copy on every save.
 
 ## Panel styling
 
@@ -73,6 +84,16 @@ Run the complete suite before committing:
 Also check patch whitespace:
 
     git diff --check
+
+Both run automatically after an edit to the userscript or a test file: the
+`PostToolUse` hook in `.claude/settings.json` calls
+`.claude/hooks/verify-userscript.sh`, which reports a failure instead of
+letting it pass unnoticed.
+
+While working on a change, `npm run test:watch` reruns the suite on save.
+`npm run coverage` reports which parts of the userscript the suite never
+reaches; the sandbox is given the script's absolute path so the coverage
+report can attribute it to the file on disk.
 
 The tests require no network. `test/support/harness.mjs` evaluates the
 userscript in a `node:vm` sandbox with a stubbed Strava edit page, Tampermonkey
@@ -123,17 +144,22 @@ A captured Overpass response can be loaded with
 
 When releasing a code change:
 
-1. update `@version` in `activity-renamer.user.js`;
-2. set the same version in `package.json`;
-3. run `npm test` and `git diff --check`;
-4. review the exact staged files before committing.
+1. run `npm version patch --no-git-tag-version` (or `minor`/`major`), which
+   sets the version in `package.json`, copies it into the userscript's
+   `@version` and stages the userscript, without committing or tagging;
+2. run `npm test` and `git diff --check`;
+3. review the exact staged files before committing.
 
 Keep unrelated user changes intact. Do not commit unless the user asks.
 
-For comparisons against another userscript revision, point the harness at it
-with `USERSCRIPT_PATH`:
+To see what a change does to real titles, name every fixture with both
+revisions and compare:
 
 ```sh
-git show HEAD:activity-renamer.user.js > /tmp/old.js
-USERSCRIPT_PATH=/tmp/old.js node your-benchmark.mjs
+git show HEAD:activity-renamer.user.js > ../old.js
+npm run bench -- ../old.js
 ```
+
+It prints the baseline title, the current one and the fixture's expectation for
+every scenario that moved. `USERSCRIPT_PATH` is what points the harness at
+another revision, so a one-off script can use it the same way.
