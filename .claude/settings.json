@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/verify-userscript.sh\"",
+            "timeout": 120,
+            "statusMessage": "Running the userscript suite"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "PowerShell(npm test)",
+      "Bash(node --test *)",
+      "Bash(git diff *)",
+      "PowerShell(git diff *)",
+      "Bash(git status *)",
+      "PowerShell(git status *)",
+      "Bash(git show *)",
+      "PowerShell(git show *)",
+      "Bash(git log *)",
+      "PowerShell(git log *)"
+    ]
+  }
+}
