@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.33
+// @version      0.1.34
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -487,6 +487,7 @@
     const BUILD_STATUS_ID = 'activity-renamer-build-status';
     const LOG_PREFIX = '[Activity Renamer]';
     let lastRouteAnalysis = null;
+    let lastParsedTrack = null;
     let namePanelState = null;
     let nameBuildBusy = false;
     // == Cross-origin requests ==
@@ -2274,6 +2275,18 @@
         };
     }
 
+    // The editor cannot alter a recorded track, so the export answers with the
+    // same file all through a visit to the page — several megabytes of it on a
+    // long ride. A rider who builds the name again, most often because Overpass
+    // was busy a minute ago, should not pay for that file twice. An activity
+    // without GPS is remembered as such for the same reason.
+    async function loadTrack(activityId) {
+        if (lastParsedTrack?.activityId === activityId) return lastParsedTrack.track;
+        const track = parseGpxTrack(await downloadGpx(activityId));
+        lastParsedTrack = { activityId, track };
+        return track;
+    }
+
     // Strava refuses an over-long title. The middle of the narrative is the
     // least important part of it, so that is what gives way first.
     function fitNameLength(names) {
@@ -3302,9 +3315,8 @@
             const activityId = getActivityId();
             if (!activityId) throw new Error(STRINGS.noId);
 
-            const gpxText = await downloadGpx(activityId);
+            const track = await loadTrack(activityId);
             setButtonState(button, STRINGS.analyzing, 'loading');
-            const track = parseGpxTrack(gpxText);
             if (!track) {
                 setPanelNotice(STRINGS.noGps);
                 return;

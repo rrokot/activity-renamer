@@ -95,6 +95,23 @@ test('re-injects the button when Strava re-renders the title field', async () =>
     assert.equal(renamer.observers.filter(observer => observer.connected).length, 1);
 });
 
+// The export answers with the same file all through a visit, and it is the
+// largest thing the script fetches, so a repeated build must not refetch it.
+const gpxRequestCount = renamer =>
+    renamer.requests.filter(request => request.url.includes('export_gpx')).length;
+
+test('downloads the track once however often the name is rebuilt', async () => {
+    const { fixture, renamer } = loadScenario('loop-with-revisit');
+
+    const first = await renamer.generate();
+    await renamer.generate();
+    const third = await renamer.generate();
+
+    assert.equal(first, fixture.expected);
+    assert.equal(third, fixture.expected, 'the reused track names the route as the download did');
+    assert.equal(gpxRequestCount(renamer), 1);
+});
+
 test('reports an activity without GPS instead of naming it', async () => {
     const renamer = loadRenamer({ gpx: '<?xml version="1.0"?><gpx version="1.1"></gpx>' });
 
@@ -106,6 +123,20 @@ test('reports an activity without GPS instead of naming it', async () => {
     );
     assert.equal(renamer.name, '');
     assert.equal(renamer.panelToggleButton.disabled, false);
+});
+
+test('asks once whether an activity has GPS', async () => {
+    const renamer = loadRenamer({ gpx: '<?xml version="1.0"?><gpx version="1.1"></gpx>' });
+
+    await renamer.generate();
+    await renamer.generate();
+
+    assert.equal(
+        buildNotice(renamer).textContent,
+        'No GPS data found (manual entry or indoor activity?)',
+        'the second build reports the missing track just as the first did',
+    );
+    assert.equal(gpxRequestCount(renamer), 1, 'an indoor ride does not grow a track by being asked');
 });
 
 // A page the script was injected into but cannot address: the run has to end
