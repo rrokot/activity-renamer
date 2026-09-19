@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.32
+// @version      0.1.33
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -57,6 +57,7 @@
         placeRadiusM: 300,
         roadMatchRadiusM: 25,
         featureCacheDays: 30,
+        featureCacheEntries: 50,
         overpassMaxRoutePoints: 50,
         overpassTimeoutMs: 25000,
         overpassMirrorRounds: 3,
@@ -573,11 +574,22 @@
         }
     }
 
-    function writeJsonCache(key, value) {
+    // A full store is worth one more attempt: what a caller keeps here it can
+    // fetch again, so trading older entries for the one being written loses
+    // nothing but time. With no room to make, the write is given up on, because
+    // cache failures must not prevent naming the route.
+    function writeJsonCache(key, value, makeRoom = () => false) {
+        const serialized = JSON.stringify(value);
         try {
-            localStorage.setItem(key, JSON.stringify(value));
+            localStorage.setItem(key, serialized);
+            return;
         } catch {
-            // Cache failures must not prevent naming the route.
+            if (!makeRoom()) return;
+        }
+        try {
+            localStorage.setItem(key, serialized);
+        } catch {
+            // Still no room; the entry is simply not cached.
         }
     }
 
@@ -1498,6 +1510,32 @@
         return `${CACHE_PREFIX.routeFeatures}${activityId}`;
     }
 
+    // Nothing reopens a year-old activity page to retire its entry, so age on
+    // its own would let the cache grow with every ride named, in a store
+    // strava.com shares with Strava itself. It is bounded the way the ride
+    // history is: the expired entries go first, then the oldest of the rest.
+    function routeFeatureCacheKeys() {
+        const keys = [];
+        for (let index = 0; index < localStorage.length; index++) {
+            const key = localStorage.key(index);
+            if (key?.startsWith(CACHE_PREFIX.routeFeatures)) keys.push(key);
+        }
+        return keys;
+    }
+
+    function pruneRouteFeatureCache(keepNewest) {
+        const maxAge = CONFIG.featureCacheDays * 24 * 60 * 60 * 1000;
+        // readJsonCache removes what it cannot parse, so every key is read only
+        // after the enumeration above has finished with the store.
+        const entries = routeFeatureCacheKeys()
+            .map(key => ({ key, savedAt: Number(readJsonCache(key)?.savedAt) || 0 }))
+            .sort((a, b) => b.savedAt - a.savedAt);
+        const dropped = entries.filter((entry, rank) =>
+            rank >= keepNewest || Date.now() - entry.savedAt > maxAge);
+        for (const entry of dropped) localStorage.removeItem(entry.key);
+        return dropped.length > 0;
+    }
+
     function isValidCachedPassage(passage, trackLength) {
         const commonIsValid = isValidCachedRange(passage, trackLength)
             && typeof passage.baseName === 'string'
@@ -1538,13 +1576,20 @@
     }
 
     function cacheRoutePassages(activityId, track, passages, placeCount, roadCount) {
-        writeJsonCache(routeFeatureCacheKey(activityId), {
-            signature: trackSignature(track),
-            savedAt: Date.now(),
-            passages,
-            placeCount,
-            roadCount,
-        });
+        // Room for this entry among the newest; then, if the store is full
+        // regardless, room made by halving what the first pass left behind.
+        pruneRouteFeatureCache(CONFIG.featureCacheEntries - 1);
+        writeJsonCache(
+            routeFeatureCacheKey(activityId),
+            {
+                signature: trackSignature(track),
+                savedAt: Date.now(),
+                passages,
+                placeCount,
+                roadCount,
+            },
+            () => pruneRouteFeatureCache(Math.floor(routeFeatureCacheKeys().length / 2)),
+        );
     }
 
     async function loadRoutePassages(activityId, track, onRetry) {
@@ -2903,7 +2948,11 @@
             );
         };
         syncSliderProgress();
-        const inputLabel = createFieldLabel(inputId, 'Places in name');
+        // Which mode a field is in belongs to how it is announced, so the two
+        // mode fields are named from syncMode below. An aria-label overrides
+        // the text of a <label for>, so giving them one too would only leave a
+        // second name to keep in step with the one assistive technology reads.
+        const countName = 'Manual place count for this activity';
         const input = createPanelInput({
             id: inputId,
             type: 'number',
@@ -2920,10 +2969,7 @@
         const densityExplanation = 'Automatic density, saved for every activity: '
             + `map span divided by this value, rounded to ${
                 CONFIG.minAutoPlaces}–${CONFIG.autoNamePlaceCeiling} places.`;
-        const densityLabel = createFieldLabel(
-            densityId,
-            'Kilometres of map span per automatic place',
-        );
+        const densityName = 'Kilometres of map span per automatic place';
         const densityInput = createPanelInput({
             id: densityId,
             type: 'number',
@@ -2940,18 +2986,18 @@
             input.dataset.modeActive = String(!automatic);
             densityInput.dataset.modeActive = String(automatic);
             input.title = automatic
-                ? 'Manual place count for this activity. Change it to switch to manual mode.'
-                : 'Manual place count for this activity — active.';
+                ? `${countName}. Change it to switch to manual mode.`
+                : `${countName} — active.`;
             input.setAttribute(
                 'aria-label',
-                `Manual place count for this activity${automatic ? '' : ', active mode'}`,
+                `${countName}${automatic ? '' : ', active mode'}`,
             );
             densityInput.title = `${densityExplanation} ${automatic
                 ? 'Automatic mode is active.'
                 : 'Change it to switch to automatic mode.'}`;
             densityInput.setAttribute(
                 'aria-label',
-                `${densityLabel.textContent}${automatic ? ', active mode' : ''}`,
+                `${densityName}${automatic ? ', active mode' : ''}`,
             );
         };
         syncMode(loadRideOverride().placeCount === null);
@@ -3039,7 +3085,7 @@
         });
         activateOnEnter(densityInput, () => applyDensity(densityInput.value, true));
 
-        controls.append(sliderLabel, slider, inputLabel, input, densityLabel, densityInput);
+        controls.append(sliderLabel, slider, input, densityInput);
         section.append(controls);
         if (state.countError) section.append(createFieldError(noteId, state.countError));
         if (state.densityError) {

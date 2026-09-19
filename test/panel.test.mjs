@@ -133,10 +133,15 @@ test('stores a permanent automatic place density', async () => {
     assert.equal(density.max, undefined, 'the density field has no upper limit');
     assert.equal(density.step, '0.1');
     assert.equal(density.value, '1.3');
-    const densityLabel = renamer.panel.querySelector(
-        'label[for="activity-renamer-auto-place-spacing"]',
+    assert.equal(
+        renamer.panel.querySelector('label[for="activity-renamer-auto-place-spacing"]'),
+        null,
+        'an aria-label overrides a <label for>, so the field is named once',
     );
-    assert.equal(densityLabel.className, 'sr-only');
+    assert.equal(
+        density.getAttribute('aria-label'),
+        'Kilometres of map span per automatic place, active mode',
+    );
     assert.match(density.title, /map span divided by this value/i);
     const count = panelField(renamer, 'activity-renamer-name-place-count');
     assert.equal(density.parentNode, count.parentNode);
@@ -204,10 +209,17 @@ test('shows the calculated place count and overrides it for this ride', async ()
         '62.5%',
     );
     assert.equal(
-        renamer.panel.querySelector('label[for="activity-renamer-name-place-count"]').className,
+        renamer.panel
+            .querySelector('label[for="activity-renamer-name-place-count-slider"]').className,
         'sr-only',
-        'the shared control label remains available to assistive technology',
+        'the slider keeps a hidden label, having no aria-label to override it',
     );
+    assert.equal(
+        renamer.panel.querySelector('label[for="activity-renamer-name-place-count"]'),
+        null,
+    );
+    assert.equal(limit.getAttribute('aria-label'), 'Manual place count for this activity',
+        'the number field is named by the mode it is in, not by a label nothing reads');
     const countBlock = limit.parentNode.parentNode;
     const chips = countBlock.nextSibling;
     assert.equal(chips.className, 'activity-renamer-chips');

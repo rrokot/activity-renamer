@@ -44,6 +44,108 @@ test('does not cache a route without landmarks', async () => {
     );
 });
 
+// Nothing revisits an old activity page to retire its entry, so a cache
+// written there is only ever dropped by the next route that needs the room.
+const FEATURE_PREFIX = 'activity_renamer_features_v2_';
+// CONFIG.featureCacheEntries, the ceiling a write prunes down to.
+const FEATURE_CACHE_ENTRIES = 50;
+
+const cachedEntry = savedAt => JSON.stringify({
+    signature: 'another-route',
+    savedAt,
+    passages: [],
+    placeCount: 0,
+    roadCount: 0,
+});
+
+const featureKeys = renamer => [...renamer.localStorage.store.keys()]
+    .filter(key => key.startsWith(FEATURE_PREFIX));
+
+test('drops an expired entry of another route when a route is cached', async () => {
+    const fortyDaysAgo = Date.now() - 40 * 24 * 60 * 60 * 1000;
+    const { fixture, renamer } = loadScenario('loop-with-revisit', {
+        storage: {
+            [`${FEATURE_PREFIX}expired`]: cachedEntry(fortyDaysAgo),
+            [`${FEATURE_PREFIX}fresh`]: cachedEntry(Date.now()),
+            unrelated_strava_key: 'left alone',
+        },
+    });
+
+    await renamer.generate();
+
+    assert.deepEqual(
+        featureKeys(renamer).sort(),
+        [`${FEATURE_PREFIX}${fixture.activityId}`, `${FEATURE_PREFIX}fresh`].sort(),
+        'the entry past featureCacheDays goes; the recent one stays',
+    );
+    assert.equal(renamer.localStorage.getItem('unrelated_strava_key'), 'left alone',
+        'the sweep reaches only this script’s own cache keys');
+});
+
+test('keeps the feature cache down to the newest activities', async () => {
+    const surplus = 10;
+    const seeded = Object.fromEntries(
+        Array.from({ length: FEATURE_CACHE_ENTRIES + surplus }, (unused, age) => [
+            `${FEATURE_PREFIX}seed${age}`,
+            cachedEntry(Date.now() - age * 1000),
+        ]),
+    );
+    const { fixture, renamer } = loadScenario('loop-with-revisit', { storage: seeded });
+
+    await renamer.generate();
+
+    const keys = featureKeys(renamer);
+    assert.equal(keys.length, FEATURE_CACHE_ENTRIES,
+        'the route just named fits inside the ceiling instead of raising it');
+    assert.ok(keys.includes(`${FEATURE_PREFIX}${fixture.activityId}`));
+    assert.ok(keys.includes(`${FEATURE_PREFIX}seed0`), 'the newest entry survives');
+    assert.ok(!keys.includes(`${FEATURE_PREFIX}seed${FEATURE_CACHE_ENTRIES + surplus - 1}`),
+        'the oldest entry is the one that pays for the room');
+});
+
+// A store Strava itself has filled leaves the ceiling met and the write still
+// refused, and silence there would retire the cache for good.
+test('makes room and writes again when the store refuses an entry', async () => {
+    const { fixture, renamer } = loadScenario('loop-with-revisit', {
+        storage: {
+            [`${FEATURE_PREFIX}other1`]: cachedEntry(Date.now()),
+            [`${FEATURE_PREFIX}other2`]: cachedEntry(Date.now() - 1000),
+        },
+    });
+    const accept = renamer.localStorage.setItem;
+    let refusals = 1;
+    renamer.localStorage.setItem = (key, value) => {
+        if (refusals > 0 && key.startsWith(FEATURE_PREFIX)) {
+            refusals -= 1;
+            throw new Error('QuotaExceededError');
+        }
+        accept(key, value);
+    };
+
+    await renamer.generate();
+    const second = await renamer.generate();
+
+    assert.equal(second, fixture.expected);
+    assert.equal(renamer.overpassRequestCount(), 1,
+        'the retried write leaves a cache the second run can use');
+    assert.ok(!featureKeys(renamer).includes(`${FEATURE_PREFIX}other2`),
+        'the older of the two entries paid for the retry');
+});
+
+test('names the route anyway when no eviction can make room', async () => {
+    const { fixture, renamer } = loadScenario('loop-with-revisit', {
+        storage: { [`${FEATURE_PREFIX}other`]: cachedEntry(Date.now()) },
+    });
+    renamer.localStorage.setItem = key => {
+        if (key.startsWith(FEATURE_PREFIX)) throw new Error('QuotaExceededError');
+    };
+
+    const name = await renamer.generate();
+
+    assert.equal(name, fixture.expected, 'a store that stays full costs speed, not a name');
+    assert.deepEqual(featureKeys(renamer), [], 'nothing was left claiming to be cached');
+});
+
 test('discards a cache written under different naming settings', async () => {
     const fixture = loadFixture('loop-with-revisit');
     const cacheKey = `activity_renamer_features_v2_${fixture.activityId}`;
