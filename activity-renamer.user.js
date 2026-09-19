@@ -21,9 +21,38 @@
 // @run-at       document-idle
 // ==/UserScript==
 
+// The sections of this file, in order. Each one starts with its own
+// `// == name ==` banner, so
+//
+//     grep -n "^    // == " activity-renamer.user.js
+//
+// prints this map with the line numbers it has today. They are left out
+// below because a written line number is wrong by the next edit.
+//
+//   Configuration and strings       CONFIG, STRINGS, endpoints, storage keys
+//   Panel stylesheet                STYLES, the only place the panel is painted
+//   Shared state and helpers        element ids, mutable state, sleep and log
+//   Cross-origin requests           GM.xmlHttpRequest and Nominatim's queue
+//   Storage and settings            the localStorage cache and the GM settings
+//   Favorites and per-ride choices  saved places, blocked names, one-ride edits
+//   Track geometry                  projection, distance and simplification
+//   Overpass                        the query, the mirrors and the retry policy
+//   OSM places and roads            elements turned into places and named roads
+//   Passages along the track        where the route comes near each feature
+//   Route feature cache             signatures, and what survives a reload
+//   Endpoint addresses              Nominatim for the ends and for the search box
+//   Choosing the places             order, scores and the bounded narrative
+//   The activity page               the id, the GPX download, the name field
+//   Panel building blocks           createElement and the shared small controls
+//   Panel shell                     panel state, focus, rendering and the tabs
+//   Panel sections                  what each section of the editor shows
+//   Building the name               the click that runs the whole pipeline
+//   Injection                       where the controls go and what re-adds them
+
 (async function() {
     'use strict';
 
+    // == Configuration and strings ==
     const CONFIG = {
         placeRadiusM: 300,
         roadMatchRadiusM: 25,
@@ -123,6 +152,7 @@
     // drifting out of date. The form predates those tokens, so the five values
     // it paints from that have no token to point at are measured and named
     // below.
+    // == Panel stylesheet ==
     const STYLES = `
 .activity-renamer-controls,
 .activity-renamer-panel {
@@ -449,39 +479,17 @@
         installedStyleSheet = sheet;
     }
 
+    // == Shared state and helpers ==
     const BUTTON_ID = 'activity-renamer-rename-btn';
     const PANEL_TOGGLE_BUTTON_ID = 'activity-renamer-panel-toggle';
     const NAME_PANEL_ID = 'activity-renamer-name-panel';
     const BUILD_STATUS_ID = 'activity-renamer-build-status';
     const LOG_PREFIX = '[Activity Renamer]';
-    // Where the blame lies, by status: a 5xx is the instance having a bad
-    // minute, 429 and 406 are it turning this caller away for now, and the
-    // rest means the query itself is wrong and no mirror will like it better.
-    const OVERPASS_REFUSAL_STATUSES = new Set([406, 429]);
-
-    function overpassIsBusy(status) {
-        return status >= 500 || OVERPASS_REFUSAL_STATUSES.has(status);
-    }
-
-    // The OSM place ranks worth naming a route after: anything smaller is a
-    // hamlet or a farm the rider would not call a destination.
-    const PLACE_NODE_TYPES = ['city', 'town', 'village'];
-
-    const ROAD_TYPE_PRIORITY = {
-        motorway: 8,
-        trunk: 7,
-        primary: 6,
-        secondary: 5,
-        tertiary: 4,
-        unclassified: 3,
-        residential: 2,
-        living_street: 1,
-        cycleway: 1,
-    };
-
     let lastRouteAnalysis = null;
     let namePanelState = null;
     let nameBuildBusy = false;
+    // == Cross-origin requests ==
+
     let lastNominatimCallAt = 0;
     let nominatimQueue = Promise.resolve();
 
@@ -553,6 +561,7 @@
         return error instanceof Error ? error.message : String(error);
     }
 
+    // == Storage and settings ==
     function readJsonCache(key) {
         const stored = localStorage.getItem(key);
         if (stored === null) return null;
@@ -620,6 +629,7 @@
             ?? CONFIG.autoPlaceSpacingKm;
     }
 
+    // == Favorites and per-ride choices ==
     // A name typed into a field, loaded from storage or read from OSM reaches
     // the same single-spaced shape.
     function collapseWhitespace(value) {
@@ -849,16 +859,52 @@
         };
     }
 
-    // The colour of every state, hover included, is a stylesheet rule keyed on
-    // this attribute.
-    function setButtonState(button, text, state = 'idle') {
-        button.textContent = text;
-        button.dataset.state = state;
-    }
-
     // Every planar measurement in the script shares one flat projection, fixed
     // at the ride's mean latitude. Projecting each point at its own latitude
     // instead made two measurements of the same distance disagree.
+    function favoriteFromForm(existing, passage, name, radiusText) {
+        const trimmedName = collapseWhitespace(name);
+        if (!isUsablePlaceName(trimmedName)) {
+            throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
+        }
+        const radiusM = Number(String(radiusText).replace(',', '.'));
+        if (!isUsableRadius(radiusM)) {
+            throw new Error(`The radius must be a number from ${CONFIG.favoriteRadiusMinM}`
+                + ` to ${CONFIG.favoriteRadiusMaxM} metres.`);
+        }
+
+        const favorite = normalizeFavorite({
+            id: existing?.id || createFavoriteId(),
+            name: trimmedName,
+            lat: existing?.lat ?? passage?.lat,
+            lon: existing?.lon ?? passage?.lon,
+            radiusM,
+            address: existing?.address || passage?.address || passage?.baseName || '',
+        });
+        if (!favorite) throw new Error('That place has no usable coordinates.');
+        return favorite;
+    }
+
+    function storeFavorite(favorite) {
+        const favorites = loadFavorites();
+        const index = favorites.findIndex(item => item.id === favorite.id);
+        if (index >= 0) {
+            favorites[index] = favorite;
+        } else {
+            favorites.push(favorite);
+        }
+        storeFavorites(favorites);
+        refreshActivityName();
+        return true;
+    }
+
+    function removeFavorite(favoriteId) {
+        storeFavorites(loadFavorites().filter(item => item.id !== favoriteId));
+        refreshActivityName();
+        return true;
+    }
+
+    // == Track geometry ==
     const KM_PER_DEGREE_LAT = 110.57;
     const KM_PER_DEGREE_LON = 111.32;
 
@@ -959,49 +1005,14 @@
         };
     }
 
-    // The cache stores passages, not the later selection of passages for a
-    // title. Only settings that change landmark discovery belong here.
-    const CACHE_RELEVANT_CONFIG = [
-        'placeRadiusM',
-        'roadMatchRadiusM',
-        'overpassMaxRoutePoints',
-        'stripPlaceParentheticals',
-    ];
+    // == Overpass ==
+    // Where the blame lies, by status: a 5xx is the instance having a bad
+    // minute, 429 and 406 are it turning this caller away for now, and the
+    // rest means the query itself is wrong and no mirror will like it better.
+    const OVERPASS_REFUSAL_STATUSES = new Set([406, 429]);
 
-    function namingConfigSignature() {
-        return CACHE_RELEVANT_CONFIG
-            .map(key => `${key}=${CONFIG[key]}`)
-            .concat(`placeTypes=${PLACE_NODE_TYPES.join('+')}`)
-            .concat(`roadTypes=${Object.keys(ROAD_TYPE_PRIORITY).join('+')}`)
-            .concat(`endpointAddresses=2:${SETTLEMENT_ADDRESS_FIELDS.join('+')}`)
-            .join(',');
-    }
-
-    function trackSignature(track) {
-        const last = track.latitudes.length - 1;
-        return [
-            track.latitudes.length,
-            track.totalKm.toFixed(3),
-            track.latitudes[0].toFixed(5),
-            track.longitudes[0].toFixed(5),
-            track.latitudes[last].toFixed(5),
-            track.longitudes[last].toFixed(5),
-            namingConfigSignature(),
-        ].join(':');
-    }
-
-    function isValidCachedRange(range, trackLength) {
-        return Number.isInteger(range.start)
-            && Number.isInteger(range.end)
-            && Number.isInteger(range.anchor)
-            && range.start >= 0
-            && range.end >= range.start
-            && range.anchor >= range.start
-            && range.anchor <= range.end
-            && range.end < trackLength
-            && Number.isFinite(range.fromKm)
-            && Number.isFinite(range.toKm)
-            && Number.isFinite(range.km);
+    function overpassIsBusy(status) {
+        return status >= 500 || OVERPASS_REFUSAL_STATUSES.has(status);
     }
 
     function routeFeatureOverpassQuery(points, placeRadiusM, roadRadiusM) {
@@ -1134,6 +1145,23 @@
 
     // Keep the first language variant in bilingual OSM names. Optionally remove
     // a trailing parenthetical qualifier while preserving hyphenated names.
+    // == OSM places and roads ==
+    // The OSM place ranks worth naming a route after: anything smaller is a
+    // hamlet or a farm the rider would not call a destination.
+    const PLACE_NODE_TYPES = ['city', 'town', 'village'];
+
+    const ROAD_TYPE_PRIORITY = {
+        motorway: 8,
+        trunk: 7,
+        primary: 6,
+        secondary: 5,
+        tertiary: 4,
+        unclassified: 3,
+        residential: 2,
+        living_street: 1,
+        cycleway: 1,
+    };
+
     function cleanPlaceName(name) {
         let cleaned = name.split(/\s+[-–—]\s+|\s*\/\s*/)[0];
         if (CONFIG.stripPlaceParentheticals) {
@@ -1210,6 +1238,7 @@
         return Array.from(roadsByName.values());
     }
 
+    // == Passages along the track ==
     function passageDistances(track, start, end) {
         const fromKm = start === 0 ? 0
             : (track.cumulativeKm[start - 1] + track.cumulativeKm[start]) / 2;
@@ -1419,6 +1448,52 @@
             .sort(byTrackOrder);
     }
 
+    // == Route feature cache ==
+    // The cache stores passages, not the later selection of passages for a
+    // title. Only settings that change landmark discovery belong here.
+    const CACHE_RELEVANT_CONFIG = [
+        'placeRadiusM',
+        'roadMatchRadiusM',
+        'overpassMaxRoutePoints',
+        'stripPlaceParentheticals',
+    ];
+
+    function namingConfigSignature() {
+        return CACHE_RELEVANT_CONFIG
+            .map(key => `${key}=${CONFIG[key]}`)
+            .concat(`placeTypes=${PLACE_NODE_TYPES.join('+')}`)
+            .concat(`roadTypes=${Object.keys(ROAD_TYPE_PRIORITY).join('+')}`)
+            .concat(`endpointAddresses=2:${SETTLEMENT_ADDRESS_FIELDS.join('+')}`)
+            .join(',');
+    }
+
+    function trackSignature(track) {
+        const last = track.latitudes.length - 1;
+        return [
+            track.latitudes.length,
+            track.totalKm.toFixed(3),
+            track.latitudes[0].toFixed(5),
+            track.longitudes[0].toFixed(5),
+            track.latitudes[last].toFixed(5),
+            track.longitudes[last].toFixed(5),
+            namingConfigSignature(),
+        ].join(':');
+    }
+
+    function isValidCachedRange(range, trackLength) {
+        return Number.isInteger(range.start)
+            && Number.isInteger(range.end)
+            && Number.isInteger(range.anchor)
+            && range.start >= 0
+            && range.end >= range.start
+            && range.anchor >= range.start
+            && range.anchor <= range.end
+            && range.end < trackLength
+            && Number.isFinite(range.fromKm)
+            && Number.isFinite(range.toKm)
+            && Number.isFinite(range.km);
+    }
+
     function routeFeatureCacheKey(activityId) {
         return `${CACHE_PREFIX.routeFeatures}${activityId}`;
     }
@@ -1513,6 +1588,7 @@
     // Address specificity is independent of whether the containing municipality
     // is tagged town or city. Local settlements and districts precede both.
     // The same hierarchy names searched addresses and route endpoints.
+    // == Endpoint addresses ==
     const SETTLEMENT_ADDRESS_FIELDS = ['hamlet', 'village', 'suburb', 'city_district', 'town', 'city'];
 
     async function fetchEndpointAddress(lat, lon) {
@@ -1629,6 +1705,7 @@
         return data.map(candidateFromSearchResult).filter(Boolean);
     }
 
+    // == Choosing the places ==
     function favoriteVisits(track, favorites) {
         return favorites
             .flatMap(favorite => visitsFromDistances(
@@ -2104,6 +2181,7 @@
         };
     }
 
+    // == The activity page ==
     function getActivityId() {
         return window.location.pathname.match(/^\/activities\/(\d+)/)?.[1] || null;
     }
@@ -2151,29 +2229,6 @@
         };
     }
 
-    // The compact chevron only reflects whether the inline panel is open.
-    function updatePanelToggleButton() {
-        const button = document.getElementById(PANEL_TOGGLE_BUTTON_ID);
-        if (!button) return;
-        const ready = lastRouteAnalysis?.activityId === getActivityId();
-        const panelOpen = namePanelState?.activityId === getActivityId() && namePanelState.open;
-        button.disabled = false;
-        button.setAttribute('aria-expanded', String(panelOpen));
-        button.setAttribute('aria-controls', NAME_PANEL_ID);
-        if (panelOpen) {
-            button.title = 'Hide Activity Renamer';
-            button.setAttribute('aria-label', button.title);
-            return;
-        }
-        if (!ready) {
-            button.title = 'Open Activity Renamer settings; build the route to edit its landmarks';
-            button.setAttribute('aria-label', button.title);
-            return;
-        }
-        button.title = 'Open Activity Renamer';
-        button.setAttribute('aria-label', button.title);
-    }
-
     // Strava refuses an over-long title. The middle of the narrative is the
     // least important part of it, so that is what gives way first.
     function fitNameLength(names) {
@@ -2216,60 +2271,7 @@
         updatePanelToggleButton();
     }
 
-    function favoriteFromForm(existing, passage, name, radiusText) {
-        const trimmedName = collapseWhitespace(name);
-        if (!isUsablePlaceName(trimmedName)) {
-            throw new Error(`The name must be 1–${CONFIG.maxPlaceNameLength} characters long.`);
-        }
-        const radiusM = Number(String(radiusText).replace(',', '.'));
-        if (!isUsableRadius(radiusM)) {
-            throw new Error(`The radius must be a number from ${CONFIG.favoriteRadiusMinM}`
-                + ` to ${CONFIG.favoriteRadiusMaxM} metres.`);
-        }
-
-        const favorite = normalizeFavorite({
-            id: existing?.id || createFavoriteId(),
-            name: trimmedName,
-            lat: existing?.lat ?? passage?.lat,
-            lon: existing?.lon ?? passage?.lon,
-            radiusM,
-            address: existing?.address || passage?.address || passage?.baseName || '',
-        });
-        if (!favorite) throw new Error('That place has no usable coordinates.');
-        return favorite;
-    }
-
-    function storeFavorite(favorite) {
-        const favorites = loadFavorites();
-        const index = favorites.findIndex(item => item.id === favorite.id);
-        if (index >= 0) {
-            favorites[index] = favorite;
-        } else {
-            favorites.push(favorite);
-        }
-        storeFavorites(favorites);
-        refreshActivityName();
-        return true;
-    }
-
-    function removeFavorite(favoriteId) {
-        storeFavorites(loadFavorites().filter(item => item.id !== favoriteId));
-        refreshActivityName();
-        return true;
-    }
-
-    // Every panel action reports the same way: nothing a click in here can hit
-    // is worth losing the page over.
-    async function runPanelAction(action) {
-        try {
-            await action();
-            setPanelNotice('');
-        } catch (error) {
-            console.error(`${LOG_PREFIX} error:`, error);
-            setPanelNotice(errorMessage(error), true);
-        }
-    }
-
+    // == Panel building blocks ==
     function createElement(tagName, className, properties = {}) {
         const element = document.createElement(tagName);
         element.className = className;
@@ -2400,6 +2402,209 @@
 
     // The name and radius of a Favorite are edited in context, under the item
     // that opened the editor.
+    // The colour of every state, hover included, is a stylesheet rule keyed on
+    // this attribute.
+    function setButtonState(button, text, state = 'idle') {
+        button.textContent = text;
+        button.dataset.state = state;
+    }
+
+    // The compact chevron only reflects whether the inline panel is open.
+    function updatePanelToggleButton() {
+        const button = document.getElementById(PANEL_TOGGLE_BUTTON_ID);
+        if (!button) return;
+        const ready = lastRouteAnalysis?.activityId === getActivityId();
+        const panelOpen = namePanelState?.activityId === getActivityId() && namePanelState.open;
+        button.disabled = false;
+        button.setAttribute('aria-expanded', String(panelOpen));
+        button.setAttribute('aria-controls', NAME_PANEL_ID);
+        if (panelOpen) {
+            button.title = 'Hide Activity Renamer';
+            button.setAttribute('aria-label', button.title);
+            return;
+        }
+        if (!ready) {
+            button.title = 'Open Activity Renamer settings; build the route to edit its landmarks';
+            button.setAttribute('aria-label', button.title);
+            return;
+        }
+        button.title = 'Open Activity Renamer';
+        button.setAttribute('aria-label', button.title);
+    }
+
+    // Every panel action reports the same way: nothing a click in here can hit
+    // is worth losing the page over.
+    async function runPanelAction(action) {
+        try {
+            await action();
+            setPanelNotice('');
+        } catch (error) {
+            console.error(`${LOG_PREFIX} error:`, error);
+            setPanelNotice(errorMessage(error), true);
+        }
+    }
+
+    // == Panel shell ==
+    // Whatever the run or a panel click could not do is said here, above the
+    // name it was about. A blocking dialog would cover that form and freeze
+    // the page behind it, so the panel is the only channel.
+    function appendBuildNotice(panel, state) {
+        if (!state.notice) return;
+        const status = createStatusLine(state.notice.text, state.notice.isError);
+        status.id = BUILD_STATUS_ID;
+        panel.append(status);
+    }
+
+    function setPanelNotice(text, isError = false) {
+        const state = currentNamePanelState();
+        const notice = text ? { text, isError } : null;
+        if (!notice && !state.notice) return;
+        state.notice = notice;
+        renderNamePanel();
+    }
+
+    const PANEL_SECTIONS = [appendBuildNotice, appendThisName, appendCollectionSections];
+
+    function panelFocusableElements(panel) {
+        return Array.from(panel.querySelectorAll('button, input, textarea, select, a'))
+            .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
+    }
+
+    function capturePanelFocus(panel) {
+        const element = document.activeElement;
+        if (!element || !panel.contains(element)) return null;
+        return {
+            id: element.id,
+            tagName: element.tagName,
+            text: element.textContent,
+            title: element.title || '',
+        };
+    }
+
+    function restorePanelFocus(panel, snapshot, preferredId) {
+        if (!snapshot && !preferredId) return;
+        let target = preferredId ? panel.querySelector(`#${preferredId}`) : null;
+        if (!target && snapshot?.id) target = panel.querySelector(`#${snapshot.id}`);
+        if (!target && snapshot) {
+            target = panelFocusableElements(panel).find(element =>
+                element.tagName === snapshot.tagName
+                && element.textContent === snapshot.text
+                && (element.title || '') === snapshot.title);
+        }
+        if (target?.disabled) target = null;
+        target?.focus();
+    }
+
+    function createNamePanelState() {
+        return {
+            activityId: getActivityId(),
+            open: false,
+            view: null,
+            editing: null,
+            confirmingDeleteId: null,
+            activeCollection: 'places',
+            refreshCollection: null,
+            notice: null,
+            countError: '',
+            densityError: '',
+            search: { query: '', candidates: [], status: '', error: false, busy: false },
+        };
+    }
+
+    function currentNamePanelState() {
+        const activityId = getActivityId();
+        if (!namePanelState || namePanelState.activityId !== activityId) {
+            document.getElementById(NAME_PANEL_ID)?.remove();
+            namePanelState = createNamePanelState();
+        }
+        return namePanelState;
+    }
+
+    function ensureNamePanelRoot() {
+        const existing = document.getElementById(NAME_PANEL_ID);
+        if (existing) return existing;
+
+        const nameInput = document.querySelector('input[name="activity[name]"]');
+        if (!nameInput?.parentNode) return null;
+
+        const panel = createElement('section', 'activity-renamer-panel', {
+            id: NAME_PANEL_ID,
+        });
+        panel.setAttribute('role', 'region');
+        panel.setAttribute('aria-label', 'Activity Renamer');
+        nameInput.parentNode.insertBefore(panel, nameInput.nextSibling);
+        return panel;
+    }
+
+    // Every action mutates one persistent state object. If Strava rebuilds its
+    // edit form, the root is mounted again without losing an address query or
+    // an in-progress place edit.
+    function renderNamePanel(preferredFocusId = null) {
+        const state = currentNamePanelState();
+        if (!state.open) return;
+        const panel = ensureNamePanelRoot();
+        if (!panel) return;
+
+        const focusSnapshot = capturePanelFocus(panel);
+        state.view = currentRouteView();
+        state.refreshCollection = null;
+        panel.replaceChildren();
+        for (const section of PANEL_SECTIONS) section(panel, state, renderNamePanel);
+        panel.setAttribute('aria-busy', String(nameBuildBusy));
+        if (nameBuildBusy) {
+            for (const control of panel.querySelectorAll('button, input')) control.disabled = true;
+        }
+        restorePanelFocus(panel, focusSnapshot, preferredFocusId);
+    }
+
+    function toggleNamePanel() {
+        const state = currentNamePanelState();
+        state.open = !state.open;
+        if (state.open) renderNamePanel();
+        else document.getElementById(NAME_PANEL_ID)?.remove();
+        updatePanelToggleButton();
+    }
+
+    // What the panel is looking at: the ride analyzed for this page, the name
+    // it currently produces, and the landmark behind every part of that name.
+    function currentRouteView() {
+        const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
+        if (!analysis) return null;
+
+        const favorites = loadFavorites();
+        const landmarks = routeLandmarks(analysis.passages, analysis.track, favorites);
+        const byName = new Map();
+        for (const landmark of landmarks) {
+            if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
+        }
+        return { names: currentActivityNames() || [], landmarks, byName, favorites };
+    }
+
+    // One place builds the editor state, so a chip, a landmark, a Favorite
+    // and a search result all open the same form — under whatever was clicked.
+    function openPlaceEditor(state, render, { existing = null, passage = null, anchor }) {
+        state.editing = {
+            existing,
+            passage,
+            anchor,
+            name: existing?.name || passage?.baseName || '',
+            radiusM: String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
+            error: '',
+        };
+        state.confirmingDeleteId = null;
+        render('activity-renamer-place-name-input');
+    }
+
+    function appendEditorAt(container, state, render, anchor) {
+        const editing = state.editing;
+        const isSameFavorite = editing?.existing?.id && editing.existing.id === anchor?.id;
+        if (editing?.anchor === anchor || isSameFavorite) {
+            appendPlaceEditor(container, state, render);
+        }
+    }
+
+    // == Panel sections ==
+
     function appendPlaceEditor(panel, state, render) {
         const editing = state.editing;
         if (!editing) return;
@@ -2634,164 +2839,6 @@
         panel.append(tablist);
         for (const entry of COLLECTION_TABS) {
             appendCollectionTab(panel, state, render, tablist, entry);
-        }
-    }
-
-    // Whatever the run or a panel click could not do is said here, above the
-    // name it was about. A blocking dialog would cover that form and freeze
-    // the page behind it, so the panel is the only channel.
-    function appendBuildNotice(panel, state) {
-        if (!state.notice) return;
-        const status = createStatusLine(state.notice.text, state.notice.isError);
-        status.id = BUILD_STATUS_ID;
-        panel.append(status);
-    }
-
-    function setPanelNotice(text, isError = false) {
-        const state = currentNamePanelState();
-        const notice = text ? { text, isError } : null;
-        if (!notice && !state.notice) return;
-        state.notice = notice;
-        renderNamePanel();
-    }
-
-    const PANEL_SECTIONS = [appendBuildNotice, appendThisName, appendCollectionSections];
-
-    function panelFocusableElements(panel) {
-        return Array.from(panel.querySelectorAll('button, input, textarea, select, a'))
-            .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
-    }
-
-    function capturePanelFocus(panel) {
-        const element = document.activeElement;
-        if (!element || !panel.contains(element)) return null;
-        return {
-            id: element.id,
-            tagName: element.tagName,
-            text: element.textContent,
-            title: element.title || '',
-        };
-    }
-
-    function restorePanelFocus(panel, snapshot, preferredId) {
-        if (!snapshot && !preferredId) return;
-        let target = preferredId ? panel.querySelector(`#${preferredId}`) : null;
-        if (!target && snapshot?.id) target = panel.querySelector(`#${snapshot.id}`);
-        if (!target && snapshot) {
-            target = panelFocusableElements(panel).find(element =>
-                element.tagName === snapshot.tagName
-                && element.textContent === snapshot.text
-                && (element.title || '') === snapshot.title);
-        }
-        if (target?.disabled) target = null;
-        target?.focus();
-    }
-
-    function createNamePanelState() {
-        return {
-            activityId: getActivityId(),
-            open: false,
-            view: null,
-            editing: null,
-            confirmingDeleteId: null,
-            activeCollection: 'places',
-            refreshCollection: null,
-            notice: null,
-            countError: '',
-            densityError: '',
-            search: { query: '', candidates: [], status: '', error: false, busy: false },
-        };
-    }
-
-    function currentNamePanelState() {
-        const activityId = getActivityId();
-        if (!namePanelState || namePanelState.activityId !== activityId) {
-            document.getElementById(NAME_PANEL_ID)?.remove();
-            namePanelState = createNamePanelState();
-        }
-        return namePanelState;
-    }
-
-    function ensureNamePanelRoot() {
-        const existing = document.getElementById(NAME_PANEL_ID);
-        if (existing) return existing;
-
-        const nameInput = document.querySelector('input[name="activity[name]"]');
-        if (!nameInput?.parentNode) return null;
-
-        const panel = createElement('section', 'activity-renamer-panel', {
-            id: NAME_PANEL_ID,
-        });
-        panel.setAttribute('role', 'region');
-        panel.setAttribute('aria-label', 'Activity Renamer');
-        nameInput.parentNode.insertBefore(panel, nameInput.nextSibling);
-        return panel;
-    }
-
-    // Every action mutates one persistent state object. If Strava rebuilds its
-    // edit form, the root is mounted again without losing an address query or
-    // an in-progress place edit.
-    function renderNamePanel(preferredFocusId = null) {
-        const state = currentNamePanelState();
-        if (!state.open) return;
-        const panel = ensureNamePanelRoot();
-        if (!panel) return;
-
-        const focusSnapshot = capturePanelFocus(panel);
-        state.view = currentRouteView();
-        state.refreshCollection = null;
-        panel.replaceChildren();
-        for (const section of PANEL_SECTIONS) section(panel, state, renderNamePanel);
-        panel.setAttribute('aria-busy', String(nameBuildBusy));
-        if (nameBuildBusy) {
-            for (const control of panel.querySelectorAll('button, input')) control.disabled = true;
-        }
-        restorePanelFocus(panel, focusSnapshot, preferredFocusId);
-    }
-
-    function toggleNamePanel() {
-        const state = currentNamePanelState();
-        state.open = !state.open;
-        if (state.open) renderNamePanel();
-        else document.getElementById(NAME_PANEL_ID)?.remove();
-        updatePanelToggleButton();
-    }
-
-    // What the panel is looking at: the ride analyzed for this page, the name
-    // it currently produces, and the landmark behind every part of that name.
-    function currentRouteView() {
-        const analysis = lastRouteAnalysis?.activityId === getActivityId() ? lastRouteAnalysis : null;
-        if (!analysis) return null;
-
-        const favorites = loadFavorites();
-        const landmarks = routeLandmarks(analysis.passages, analysis.track, favorites);
-        const byName = new Map();
-        for (const landmark of landmarks) {
-            if (landmark.name && !byName.has(landmark.name)) byName.set(landmark.name, landmark);
-        }
-        return { names: currentActivityNames() || [], landmarks, byName, favorites };
-    }
-
-    // One place builds the editor state, so a chip, a landmark, a Favorite
-    // and a search result all open the same form — under whatever was clicked.
-    function openPlaceEditor(state, render, { existing = null, passage = null, anchor }) {
-        state.editing = {
-            existing,
-            passage,
-            anchor,
-            name: existing?.name || passage?.baseName || '',
-            radiusM: String(existing?.radiusM ?? CONFIG.favoriteRadiusM),
-            error: '',
-        };
-        state.confirmingDeleteId = null;
-        render('activity-renamer-place-name-input');
-    }
-
-    function appendEditorAt(container, state, render, anchor) {
-        const editing = state.editing;
-        const isSameFavorite = editing?.existing?.id && editing.existing.id === anchor?.id;
-        if (editing?.anchor === anchor || isSameFavorite) {
-            appendPlaceEditor(container, state, render);
         }
     }
 
@@ -3184,6 +3231,7 @@
         });
     }
 
+    // == Building the name ==
     async function generateAndFillName(button) {
         // The panel mounts beside the name field, so without that field the
         // button is the only thing left to report through.
@@ -3269,6 +3317,7 @@
     // makes this field the page's one answer to "is there a track to name". The
     // map container and the map image say the same, but through styling rather
     // than through the form, so they are not read.
+    // == Injection ==
     const ROUTE_MARKER_SELECTOR = 'select[name="activity[selected_polyline_style]"]';
     const SPORT_TYPE_SELECTOR = 'select[name="activity[sport_type]"]';
 

@@ -6,7 +6,11 @@ installation, usage and user-visible behaviour.
 ## Project shape
 
 - `activity-renamer.user.js` is the complete userscript and the only production
-  source file.
+  source file. A map of its sections sits under the metadata block, and each
+  section starts with a `// == name ==` banner, so
+  `grep -n "^    // == " activity-renamer.user.js` prints that map with the
+  line numbers it has today. A new section needs the banner and a line in the
+  map; neither carries line numbers, which would be wrong by the next edit.
 - `package.json` contains the matching package version and the commands below.
 - `test/*.test.mjs` contains behavioural tests.
 - `test/support/` contains the DOM, panel and userscript harness.
