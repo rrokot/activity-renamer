@@ -63,7 +63,8 @@ imitates. Three rules keep it there:
 - Take spacing, radii and brand colour from the design tokens on `:root`,
   without a `var()` fallback. The edit form itself predates those tokens and
   paints from an older palette that has none: `#dfdfe8` hairlines, `#6d6d78`
-  secondary text, a `#ceced3` slider handle over an `#f4f4f4`-to-orange rail.
+  secondary text, a `#ceced3` slider handle over an `#f4f4f4`-to-orange rail
+  that continues in `#f0f0f0` past the handle.
   Those five are named once at the top of `STYLES`; do not invent a sixth
   without measuring it on the page first.
 
@@ -121,8 +122,11 @@ Each `test/fixtures/*.json` file describes one scenario and is named after the
 behaviour it protects. Its fields are:
 
 - `activityId`: synthetic activity identifier;
+- `description`: one sentence naming the rule the fixture protects;
 - `expected`: complete expected title;
 - `stepM`: spacing used when densifying a coarse route;
+- `favorites`: optional saved places, loaded into Tampermonkey storage
+  before the run;
 - `places`: synthetic Overpass settlement nodes;
 - `roads`: synthetic Overpass road ways;
 - `waypoints`: coarse route coordinates.
