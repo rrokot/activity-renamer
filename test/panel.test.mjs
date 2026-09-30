@@ -24,6 +24,97 @@ import {
 const FAVORITES_KEY = 'activity_renamer_saved_places_v1';
 const ACTIVITY_OVERRIDES_KEY = 'activity_renamer_ride_names_v1';
 const AUTO_PLACE_SPACING_KEY = 'activity_renamer_auto_place_spacing_km_v1';
+const FAVORITE_TITLES_KEY = 'activity_renamer_favorite_titles_v1';
+
+test('edits a saved title in place with validation and cancellation', async () => {
+    const { renamer } = loadScenario('loop-with-revisit', {
+        userscriptStorage: { [FAVORITE_TITLES_KEY]: JSON.stringify(['Talsperre Spremberg', 'Evening ride']) },
+    });
+    await renamer.ready;
+    openPanel(renamer);
+    panelButton(renamer, 'Saved titles').click();
+    const field = () => panelField(renamer, 'activity-renamer-favorite-title-input');
+    const saved = () => JSON.parse(renamer.userscriptStore.get(FAVORITE_TITLES_KEY));
+    panelButton(renamer, 'Talsperre Spremberg').click();
+    panelButton(renamer, 'Edit title').click();
+    assert.equal(field().value, 'Talsperre Spremberg');
+    assert.equal(renamer.document.activeElement, field());
+    for (const invalid of ['   ', 'x'.repeat(201), 'evening ride']) {
+        typeInto(field(), invalid);
+        panelButton(renamer, 'Save changes').click();
+        assert.equal(field().getAttribute('aria-invalid'), 'true');
+        assert.deepEqual(saved(), ['Talsperre Spremberg', 'Evening ride']);
+    }
+    typeInto(field(), '  Spremberger   See  ');
+    field().dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {} });
+    assert.deepEqual(saved(), ['Spremberger See', 'Evening ride']);
+    assert.equal(renamer.name, 'Talsperre Spremberg', 'editing the collection leaves the activity title intact');
+    panelButton(renamer, 'Spremberger See').click();
+    assert.equal(renamer.name, 'Spremberger See');
+    panelButton(renamer, 'Edit title').click();
+    typeInto(field(), 'Discard this change');
+    panelButton(renamer, 'Cancel').click();
+    assert.deepEqual(saved(), ['Spremberger See', 'Evening ride']);
+    assert.equal(field().value, '');
+    assert.ok(panelButton(renamer, 'Save title'));
+});
+
+test('saves and chooses a complete title in its own tab before building a route name', async () => {
+    const { renamer } = loadScenario('loop-with-revisit');
+    await renamer.ready;
+    openPanel(renamer);
+    panelButton(renamer, 'Saved titles').click();
+    typeInto(panelField(renamer, 'activity-renamer-favorite-title-input'), '  Talsperre   Spremberg  ');
+    panelButton(renamer, 'Save title').click();
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(FAVORITE_TITLES_KEY)), ['Talsperre Spremberg']);
+    assert.equal(renamer.requests.length, 0);
+    let inputEvents = 0;
+    renamer.input.addEventListener('input', () => inputEvents++);
+    panelButton(renamer, 'Talsperre Spremberg').click();
+    assert.equal(renamer.name, 'Talsperre Spremberg');
+    assert.equal(inputEvents, 1);
+    assert.equal(renamer.document.activeElement, renamer.input);
+    assert.deepEqual(chipNames(renamer), []);
+
+    const { renamer: reopened } = loadScenario('loop-with-revisit', {
+        userscriptStorage: { [FAVORITE_TITLES_KEY]: renamer.userscriptStore.get(FAVORITE_TITLES_KEY) },
+    });
+    await reopened.ready;
+    openPanel(reopened);
+    panelButton(reopened, 'Saved titles').click();
+    panelButton(reopened, 'Talsperre Spremberg').click();
+    assert.equal(reopened.name, 'Talsperre Spremberg');
+    panelButton(reopened, 'Delete title').click();
+    assert.deepEqual(JSON.parse(reopened.userscriptStore.get(FAVORITE_TITLES_KEY)), []);
+    assert.equal(reopened.name, 'Talsperre Spremberg', 'deleting a saved title leaves Title intact');
+
+    await renamer.generate();
+    assert.notEqual(renamer.name, 'Talsperre Spremberg');
+    assert.deepEqual(chipNames(renamer), renamer.name.split(' - '));
+});
+
+test('validates Favorite titles and saves long titles without case duplicates', async () => {
+    const { renamer } = loadScenario('loop-with-revisit');
+    await renamer.ready;
+    openPanel(renamer);
+    panelButton(renamer, 'Saved titles').click();
+    const field = () => panelField(renamer, 'activity-renamer-favorite-title-input');
+    for (const invalid of ['   ', 'x'.repeat(201)]) {
+        typeInto(field(), invalid);
+        panelButton(renamer, 'Save title').click();
+        assert.equal(field().getAttribute('aria-invalid'), 'true');
+        assert.equal(renamer.userscriptStore.has(FAVORITE_TITLES_KEY), false);
+    }
+    const title = 'A'.repeat(200);
+    for (const value of [title, title.toLowerCase()]) {
+        typeInto(field(), value);
+        field().dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {} });
+    }
+    assert.deepEqual(JSON.parse(renamer.userscriptStore.get(FAVORITE_TITLES_KEY)), [title]);
+    assert.equal(field().getAttribute('aria-invalid'), null);
+    panelButton(renamer, title).click();
+    assert.equal(renamer.name, title);
+});
 
 const burgPlace = {
     id: 'place_burg',
@@ -34,7 +125,7 @@ const burgPlace = {
     address: 'Burg (Spreewald)',
 };
 
-test('the four place collections behave as one tab set', async () => {
+test('the collections behave as one tab set with separate saved titles', async () => {
     const { renamer } = loadScenario('loop-with-revisit');
 
     await renamer.generate();
@@ -47,11 +138,12 @@ test('the four place collections behave as one tab set', async () => {
     const never = panelButton(renamer, 'Excluded');
     const places = panelButton(renamer, 'Other places');
     const roads = panelButton(renamer, 'Other roads');
-    const tabs = [places, roads, favorites, never];
+    const titles = panelButton(renamer, 'Saved titles');
+    const tabs = [places, roads, favorites, never, titles];
     const tablist = renamer.panel.querySelectorAll('div')
         .find(element => element.className === 'activity-renamer-section-tabs');
     const sectionIcons = tablist.querySelectorAll('svg');
-    assert.equal(sectionIcons.length, 4);
+    assert.equal(sectionIcons.length, 5);
     assert.ok(sectionIcons.every(icon => icon.getAttribute('aria-hidden') === 'true'));
     assert.ok(tabs
         .every(button => button.children.every(child =>
@@ -61,7 +153,7 @@ test('the four place collections behave as one tab set', async () => {
     assert.ok(tabs.every(button => button.querySelectorAll('span')
         .every(span => !span.className.includes('activity-renamer-chevron'))));
     assert.equal(places.className, favorites.className,
-        'all four collections use the same visual treatment');
+        'all collections use the same visual treatment');
     assert.equal(tablist.getAttribute('role'), 'tablist');
     assert.ok(tabs.every(tab => tab.getAttribute('role') === 'tab'));
     assert.equal(places.getAttribute('aria-selected'), 'true');
@@ -76,6 +168,8 @@ test('the four place collections behave as one tab set', async () => {
     assert.equal(panelButton(renamer, 'Excluded').getAttribute('aria-selected'), 'false');
     assert.equal(renamer.panel.querySelector('#activity-renamer-favorites').getAttribute('role'),
         'tabpanel');
+    assert.equal(renamer.panel.querySelector('#activity-renamer-favorite-title-input'), null,
+        'Favorites contains places only');
     assert.equal(
         renamer.panel.querySelector('label[for="activity-renamer-address-input"]').textContent,
         'Address',
@@ -95,6 +189,16 @@ test('the four place collections behave as one tab set', async () => {
     assert.equal(panelButton(renamer, 'Excluded').getAttribute('aria-selected'), 'true');
     assert.equal(renamer.panel.querySelector('#activity-renamer-favorites'), null);
     assert.ok(renamer.panel.querySelector('#activity-renamer-excluded'));
+
+    panelButton(renamer, 'Saved titles').click();
+    assert.ok(renamer.panel.querySelector('#activity-renamer-favorite-title-input'));
+    assert.equal(renamer.panel.querySelector('#activity-renamer-address-input'), null,
+        'saved titles need no address search');
+    assert.equal(renamer.panel.querySelector('#activity-renamer-favorites'), null);
+    panelButton(renamer, 'Saved titles').dispatchEvent({
+        type: 'keydown', key: 'ArrowRight', preventDefault() {},
+    });
+    assert.equal(panelButton(renamer, 'Other places').getAttribute('aria-selected'), 'true');
 });
 
 test('embeds a region beside Title and leaves focus in the page flow', async () => {
@@ -114,7 +218,8 @@ test('embeds a region beside Title and leaves focus in the page flow', async () 
     assert.ok(siblings.indexOf(panel) < siblings.indexOf(description));
     assert.equal(panel.querySelectorAll('form').length, 0, 'the Strava form has no nested forms');
     assert.equal(renamer.panelToggleButton.getAttribute('aria-expanded'), 'true');
-    assert.equal(renamer.document.activeElement, renamer.panelToggleButton);
+    assert.equal(renamer.document.activeElement, renamer.document.body,
+        'opening the panel on load leaves focus alone');
 
     renamer.panelToggleButton.click();
 

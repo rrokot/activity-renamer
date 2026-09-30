@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Activity Renamer
 // @namespace    https://github.com/rrokot/activity-renamer
-// @version      0.1.35
+// @version      0.1.36
 // @description  Names Strava activities from nearby OSM settlements and named roads
 // @author       Antigravity
 // @homepageURL  https://github.com/rrokot/activity-renamer
@@ -125,6 +125,7 @@
     };
     const STORAGE_KEY = {
         favorites: 'activity_renamer_saved_places_v1',
+        favoriteTitles: 'activity_renamer_favorite_titles_v1',
         blockedNames: 'activity_renamer_blocked_names_v1',
         rideOverrides: 'activity_renamer_ride_names_v1',
         autoPlaceSpacingKm: 'activity_renamer_auto_place_spacing_km_v1',
@@ -296,6 +297,14 @@
     align-items: center;
     gap: var(--space-2xs);
 }
+.activity-renamer-panel .activity-renamer-inline-form { flex-wrap: nowrap; }
+.activity-renamer-panel .activity-renamer-inline-form .activity-renamer-field {
+    flex: 1 1 0;
+    width: 0;
+}
+.activity-renamer-panel .activity-renamer-inline-form .activity-renamer-panel-button {
+    flex: 0 0 auto;
+}
 .activity-renamer-panel .activity-renamer-name-count {
     margin: 0 0 var(--space-2xs);
 }
@@ -392,6 +401,18 @@
     font-weight: 700;
     line-height: 1.2;
 }
+.activity-renamer-panel .activity-renamer-saved-title {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.activity-renamer-panel .activity-renamer-saved-title:hover { text-decoration: underline; }
 .activity-renamer-panel .activity-renamer-row-details {
     margin-top: 0;
     color: var(--activity-renamer-muted);
@@ -448,11 +469,6 @@
 }
 .activity-renamer-panel .activity-renamer-chip-drop:hover {
     background: var(--color-extendedredr3);
-}
-.activity-renamer-panel .activity-renamer-attribution {
-    margin: var(--space-3xs) 0 var(--space-sm);
-    color: var(--activity-renamer-muted);
-    font-size: 11px;
 }
 .activity-renamer-panel button:focus-visible,
 .activity-renamer-panel input:focus-visible,
@@ -707,16 +723,16 @@
     // ride starts in, a hamlet whose land the road merely crosses. Blocking is
     // by name, so it also silences a generic road name wherever it turns up.
     // Both name lists store the same shape and share this gate.
-    function normalizeListedName(value) {
+    function normalizeListedName(value, maxLength = CONFIG.maxPlaceNameLength) {
         const name = collapseWhitespace(value);
-        return isUsablePlaceName(name) ? name : null;
+        return name && name.length <= maxLength ? name : null;
     }
 
-    function normalizeListedNames(values) {
+    function normalizeListedNames(values, maxLength = CONFIG.maxPlaceNameLength) {
         const names = [];
         const seen = new Set();
         for (const value of Array.isArray(values) ? values : []) {
-            const name = normalizeListedName(value);
+            const name = normalizeListedName(value, maxLength);
             const key = name?.toLocaleLowerCase();
             if (!name || seen.has(key)) continue;
             seen.add(key);
@@ -726,20 +742,23 @@
     }
 
     function normalizeNameSequence(values) {
-        return (Array.isArray(values) ? values : []).map(normalizeListedName).filter(Boolean);
+        return (Array.isArray(values) ? values : []).map(value => normalizeListedName(value)).filter(Boolean);
     }
 
-    function loadNameList(key) {
-        return normalizeListedNames(readSetting(key));
+    function loadNameList(key, maxLength = CONFIG.maxPlaceNameLength) {
+        return normalizeListedNames(readSetting(key), maxLength);
     }
 
-    function saveNameList(key, names) {
-        const normalized = normalizeListedNames(names);
+    function saveNameList(key, names, maxLength = CONFIG.maxPlaceNameLength) {
+        const normalized = normalizeListedNames(names, maxLength);
         writeSetting(key, normalized);
         return normalized;
     }
 
     const loadBlockedNames = () => loadNameList(STORAGE_KEY.blockedNames);
+    const loadFavoriteTitles = () => loadNameList(STORAGE_KEY.favoriteTitles, CONFIG.maxNameLength);
+    const storeFavoriteTitles = titles =>
+        saveNameList(STORAGE_KEY.favoriteTitles, titles, CONFIG.maxNameLength);
 
     function nameKeys(names) {
         return new Set(names.map(name => name.toLocaleLowerCase()));
@@ -2335,6 +2354,7 @@
         const nameInput = document.querySelector('input[name="activity[name]"]');
         if (!nameInput) return false;
         nameInput.value = fitNameLength(names);
+        currentNamePanelState().appliedTitle = null;
         nameInput.dispatchEvent(new Event('input', { bubbles: true }));
         if (focusField) nameInput.focus();
         return true;
@@ -2402,6 +2422,12 @@
 
     const SECTION_ICON_PATHS = {
         add: ['M12 5v14M5 12h14'],
+        edit: ['m16 3 5 5-12 12-6 1 1-6L16 3ZM14 5l5 5'],
+        save: ['M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12l4 4v12a2 2 0 0 1-2 2ZM7 3v6h10V3M7 21v-8h10v8'],
+        cancel: ['m6 6 12 12M18 6 6 18'],
+        delete: ['M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'],
+        confirm: ['m5 12 4 4L19 6'],
+        search: ['M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0ZM15 15l6 6'],
         places: [
             'M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z',
             'M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
@@ -2409,6 +2435,7 @@
         roads: ['M8 3 6 21M16 3l2 18M12 3v4M12 10v4M12 17v4'],
         favorites: ['m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z'],
         excluded: ['M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM5.6 5.6l12.8 12.8'],
+        titles: ['M4 5h16M12 5v14M8 19h8'],
     };
 
     function createSectionIcon(name) {
@@ -2476,7 +2503,9 @@
         const row = createElement('div', 'activity-renamer-row');
         const text = createElement('div', 'activity-renamer-row-text');
         text.append(
-            createElement('div', 'activity-renamer-row-title', { textContent: title }),
+            typeof title === 'string'
+                ? createElement('div', 'activity-renamer-row-title', { textContent: title })
+                : title,
             createElement('div', 'activity-renamer-row-details', { textContent: details }),
         );
 
@@ -2584,15 +2613,19 @@
     function createNamePanelState() {
         return {
             activityId: getActivityId(),
-            open: false,
+            open: true,
             view: null,
             editing: null,
             confirmingDeleteId: null,
-            activeCollection: 'places',
+            activeCollection: 'titles',
             refreshCollection: null,
             notice: null,
             countError: '',
             densityError: '',
+            titleDraft: '',
+            titleError: '',
+            editingTitle: null,
+            appliedTitle: null,
             search: { query: '', candidates: [], status: '', error: false, busy: false },
         };
     }
@@ -2722,8 +2755,8 @@
             state.editing.radiusM = radiusInput.value;
         });
 
-        const saveButton = createPanelButton('Save', true);
-        const cancelButton = createPanelButton('Cancel');
+        const saveButton = createIconPanelButton('save', 'Save', true);
+        const cancelButton = createIconPanelButton('cancel', 'Cancel');
         cancelButton.addEventListener('click', () => {
             state.editing = null;
             render();
@@ -2817,7 +2850,7 @@
     // landmark row to start from, so it is searched for by address.
     function appendAddressSearch(panel, state, render) {
         const note = createPanelNote('Add a place by address:');
-        const controls = createElement('div', 'activity-renamer-form');
+        const controls = createElement('div', 'activity-renamer-form activity-renamer-inline-form');
 
         const input = createPanelInput({
             id: 'activity-renamer-address-input',
@@ -2831,7 +2864,7 @@
             state.search.query = input.value;
         });
 
-        const searchButton = createPanelButton('Find', true);
+        const searchButton = createIconPanelButton('search', 'Find', true);
         searchButton.disabled = state.search.busy;
         input.disabled = state.search.busy;
         controls.append(createFieldLabel(input.id, 'Address'), input, searchButton);
@@ -2840,7 +2873,7 @@
         status.id = 'activity-renamer-address-status';
         const results = document.createElement('div');
         for (const candidate of state.search.candidates) {
-            const addButton = createPanelButton('☆ Save', true);
+            const addButton = createIconPanelButton('favorites', '☆ Save', true);
             addButton.addEventListener('click', () =>
                 openPlaceEditor(state, render, { passage: candidate, anchor: candidate }));
             appendPanelRow(results, candidate.baseName, candidate.address, [addButton]);
@@ -2853,16 +2886,7 @@
         searchButton.addEventListener('click', search);
         activateOnEnter(input, search);
 
-        const attribution = createElement('div', 'activity-renamer-attribution');
-        attribution.append('Search by Nominatim · © ');
-        const attributionLink = document.createElement('a');
-        attributionLink.href = 'https://www.openstreetmap.org/copyright';
-        attributionLink.target = '_blank';
-        attributionLink.rel = 'noopener noreferrer';
-        attributionLink.textContent = 'OpenStreetMap contributors';
-        attribution.append(attributionLink);
-
-        panel.append(note, controls, status, results, attribution);
+        panel.append(note, controls, status, results);
     }
 
     // An id names the tab's icon in SECTION_ICON_PATHS as well as the tab and
@@ -2872,6 +2896,7 @@
         { id: 'roads', label: 'Other roads', appendContents: appendOtherRoadContents },
         { id: 'favorites', label: 'Favorites', appendContents: appendFavoriteContents },
         { id: 'excluded', label: 'Excluded', appendContents: appendBlockedNameContents },
+        { id: 'titles', label: 'Saved titles', appendContents: appendFavoriteTitles },
     ];
 
     function appendCollectionTab(panel, state, render, tablist, { id, label, appendContents }) {
@@ -2917,11 +2942,11 @@
         panel.append(container);
     }
 
-    // The four collections form one tab set, so exactly one is always visible.
+    // The collections form one tab set, so exactly one is always visible.
     function appendCollectionSections(panel, state, render) {
         const tablist = createElement('div', 'activity-renamer-section-tabs');
         tablist.setAttribute('role', 'tablist');
-        tablist.setAttribute('aria-label', 'Landmark collections');
+        tablist.setAttribute('aria-label', 'Activity name collections');
         panel.append(tablist);
         for (const entry of COLLECTION_TABS) {
             appendCollectionTab(panel, state, render, tablist, entry);
@@ -2934,6 +2959,10 @@
     // written. The chip's own label renames the place, the ✕ takes it out of
     // this ride.
     function appendThisName(panel, state, render) {
+        if (state.appliedTitle === document.querySelector('input[name="activity[name]"]')?.value) {
+            panel.append(createPanelNote('Saved title selected. Build Name to use route places again.'));
+            return;
+        }
         const view = state.view;
         if (!view) {
             panel.append(createPanelNote('Build the name first, then edit route landmarks here.'));
@@ -3271,15 +3300,19 @@
 
     // A Favorite replaces the OSM name on every ride that comes near it.
     function appendFavoriteContents(panel, state, render) {
+        appendAddressSearch(panel, state, render);
         appendListContents(panel, loadFavorites(), {
             empty: 'No favorites yet. Rename a place above, or add one by address.',
             row: favorite => {
-                const editButton = createPanelButton('Edit');
+                const editButton = createIconPanelButton('edit', 'Edit');
                 editButton.addEventListener('click', () =>
                     openPlaceEditor(state, render, { existing: favorite, anchor: favorite }));
 
                 const confirming = state.confirmingDeleteId === favorite.id;
-                const deleteButton = createPanelButton(confirming ? 'Confirm delete' : 'Delete');
+                const deleteButton = createIconPanelButton(
+                    confirming ? 'confirm' : 'delete',
+                    confirming ? 'Confirm delete' : 'Delete',
+                );
                 deleteButton.addEventListener('click', () => runPanelAction(() => {
                     if (!confirming) {
                         state.confirmingDeleteId = favorite.id;
@@ -3301,7 +3334,100 @@
                 appendEditorAt(panel, state, render, favorite);
             },
         });
-        appendAddressSearch(panel, state, render);
+    }
+
+    // Saved titles need no coordinates and replace the whole activity title.
+    function appendFavoriteTitles(panel, state, render) {
+        panel.append(createPanelNote('Choose a saved title to replace the complete activity title.'));
+        const titles = loadFavoriteTitles();
+        appendListContents(panel, titles, {
+            empty: 'No saved titles yet. Save one below, for example Talsperre Spremberg.',
+            row: title => {
+                const titleButton = createElement('button', 'activity-renamer-row-title activity-renamer-saved-title', {
+                    type: 'button',
+                    textContent: title,
+                    title: `Use ${title} as the activity title`,
+                });
+                titleButton.addEventListener('click', () => runPanelAction(() => {
+                    if (setActivityName([title], { focusField: true })) state.appliedTitle = title;
+                    render();
+                }));
+                const editButton = createIconPanelButton('edit', 'Edit title');
+                editButton.title = `Edit saved title ${title}`;
+                editButton.addEventListener('click', () => {
+                    state.editingTitle = title;
+                    state.titleDraft = title;
+                    state.titleError = '';
+                    render('activity-renamer-favorite-title-input');
+                });
+                const deleteButton = createIconPanelButton('delete', 'Delete title');
+                deleteButton.title = `Delete saved title ${title}`;
+                deleteButton.addEventListener('click', () => runPanelAction(() => {
+                    storeFavoriteTitles(withoutName(loadFavoriteTitles(), title));
+                    if (state.editingTitle === title) {
+                        state.editingTitle = null;
+                        state.titleDraft = '';
+                        state.titleError = '';
+                    }
+                    render();
+                }));
+                appendPanelRow(panel, titleButton, '', [editButton, deleteButton]);
+            },
+        });
+        const controls = createElement('div', 'activity-renamer-form activity-renamer-inline-form');
+        const input = createPanelInput({
+            id: 'activity-renamer-favorite-title-input',
+            value: state.titleDraft,
+            placeholder: 'Activity title',
+            maxLength: CONFIG.maxNameLength,
+        });
+        if (state.editingTitle) {
+            panel.append(createPanelNote(`Editing saved title: ${state.editingTitle}`));
+        }
+        input.addEventListener('input', () => { state.titleDraft = input.value; });
+        const save = () => runPanelAction(() => {
+            const title = normalizeListedName(state.titleDraft, CONFIG.maxNameLength);
+            if (!title) {
+                state.titleError = `Enter a title of 1–${CONFIG.maxNameLength} characters.`;
+                render(input.id);
+                return;
+            }
+            const saved = loadFavoriteTitles();
+            if (state.editingTitle && saved.some(existing =>
+                existing !== state.editingTitle
+                && existing.toLocaleLowerCase() === title.toLocaleLowerCase())) {
+                state.titleError = 'That title is already saved. Choose a different title.';
+                render(input.id);
+                return;
+            }
+            storeFavoriteTitles(state.editingTitle
+                ? saved.map(existing => existing === state.editingTitle ? title : existing)
+                : saved.concat(title));
+            state.editingTitle = null;
+            state.titleDraft = '';
+            state.titleError = '';
+            render(input.id);
+        });
+        const saveButton = createIconPanelButton('save', state.editingTitle ? 'Save changes' : 'Save title');
+        saveButton.addEventListener('click', save);
+        activateOnEnter(input, save);
+        controls.append(createFieldLabel(input.id, 'Favorite activity title'), input, saveButton);
+        if (state.editingTitle) {
+            const cancelButton = createIconPanelButton('cancel', 'Cancel');
+            cancelButton.addEventListener('click', () => {
+                state.editingTitle = null;
+                state.titleDraft = '';
+                state.titleError = '';
+                render(input.id);
+            });
+            controls.append(cancelButton);
+        }
+        panel.append(controls);
+        if (state.titleError) {
+            input.setAttribute('aria-invalid', 'true');
+            input.setAttribute('aria-describedby', 'activity-renamer-favorite-title-error');
+            panel.append(createFieldError('activity-renamer-favorite-title-error', state.titleError));
+        }
     }
 
     function appendBlockedNameContents(panel, state, render) {
@@ -3333,6 +3459,7 @@
         const state = currentNamePanelState();
         state.notice = null;
         state.open = true;
+        if (state.activeCollection === 'titles') state.activeCollection = 'places';
         button.disabled = true;
         nameBuildBusy = true;
         updatePanelToggleButton();
@@ -3477,6 +3604,7 @@
         const wrapper = createElement('div', 'activity-renamer-controls');
         titleLabel.parentNode.insertBefore(wrapper, titleLabel);
         wrapper.append(titleLabel, button, panelToggleButton);
+        currentNamePanelState();
         updatePanelToggleButton();
         if (namePanelState?.open) renderNamePanel();
         log('Button injected');

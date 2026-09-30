@@ -30,7 +30,8 @@ places along the route.
 1. Open a Strava activity's edit page. The controls appear only where the editor
    shows a recorded real-world route, so an indoor, manually entered or virtual
    activity keeps its page untouched.
-2. Click **Build Name**.
+2. **Saved titles** opens automatically. Click a saved title, or click **Build Name**
+   to generate a name from the route.
 3. Optionally open the arrow beside the controls to edit the result inline.
 4. Save the activity.
 
@@ -42,4 +43,8 @@ places along the route.
 - Set the permanent automatic density as kilometres of map span per place.
 - Browse unused route places and named roads in separate tabs.
 - Save preferred place names for future activities in **Favorites**.
+- In **Saved titles**, save complete activity titles without an address (for example,
+  **Talsperre Spremberg**). Click the saved title to replace Title; this works before
+  **Build Name** too. **Build Name** returns to automatic route naming.
+- Use **Edit title** in **Saved titles** to change a saved title, then **Save changes**.
 - Manage unwanted names separately in **Excluded**.

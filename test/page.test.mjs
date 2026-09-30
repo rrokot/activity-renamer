@@ -31,16 +31,18 @@ test('keeps global settings available before the route name is built', async () 
     assert.equal(renamer.panelToggleButton.disabled, false);
     assert.equal(
         renamer.panelToggleButton.title,
-        'Open Activity Renamer settings; build the route to edit its landmarks',
+        'Hide Activity Renamer',
     );
     assert.equal(renamer.panelToggleButton.textContent, '');
     assert.ok(renamer.panelToggleButton.querySelectorAll('span')
         .some(span => span.className.includes('icon-caret-down')));
     assert.equal(renamer.panelToggleButton.getAttribute('aria-label'), renamer.panelToggleButton.title);
 
-    renamer.panelToggleButton.click();
-
     assert.ok(renamer.panel);
+    assert.equal(renamer.panelToggleButton.getAttribute('aria-expanded'), 'true');
+    assert.equal(renamer.byId('activity-renamer-titles-tab').getAttribute('aria-selected'), 'true');
+    assert.ok(renamer.byId('activity-renamer-favorite-title-input'));
+    assert.equal(renamer.requests.length, 0, 'opening Saved titles does not download the route');
     assert.equal(renamer.panel.querySelector('h3'), null);
     assert.equal(renamer.panel.getAttribute('aria-label'), 'Activity Renamer');
     assert.ok(renamer.panel.querySelector('#activity-renamer-favorites-tab'));
@@ -58,6 +60,7 @@ test('keeps global settings available before the route name is built', async () 
 test('building a name opens the inline panel', async () => {
     const { renamer } = loadScenario('loop-with-revisit');
     await renamer.ready;
+    renamer.panelToggleButton.click();
 
     assert.equal(renamer.panelToggleButton.getAttribute('aria-expanded'), 'false');
 
@@ -72,7 +75,6 @@ test('re-injects the button when Strava re-renders the title field', async () =>
     const renamer = loadRenamer();
     await renamer.ready;
     const form = renamer.document.querySelector('form');
-    renamer.panelToggleButton.click();
     assert.ok(renamer.panel);
 
     // Strava rebuilds the field, throwing our wrapper away with it. The rest of
